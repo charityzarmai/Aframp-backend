@@ -10,7 +10,6 @@ use bigdecimal::BigDecimal;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
@@ -102,8 +101,8 @@ pub struct ErrorDetail {
 
 /// Supported currency pairs
 const SUPPORTED_PAIRS: &[(&str, &str)] = &[
-    ("NGN", "cNGN"),
-    ("cNGN", "NGN"),
+    ("USD", "NGN"),
+    ("NGN", "USD"),
 ];
 
 /// Get supported currencies from pairs
@@ -137,6 +136,14 @@ fn is_pair_supported(from: &str, to: &str) -> bool {
     SUPPORTED_PAIRS
         .iter()
         .any(|(f, t)| f == &from && t == &to)
+}
+
+fn fixed_peg_rate(from: &str, to: &str) -> Option<BigDecimal> {
+    if (from == "NGN" && to == "cNGN") || (from == "cNGN" && to == "NGN") {
+        Some(BigDecimal::from(1))
+    } else {
+        None
+    }
 }
 
 /// Generate cache key for rate query
@@ -263,63 +270,71 @@ async fn handle_single_pair(
         ));
     }
 
-    // Fetch rate from service
-    match state.exchange_rate_service.get_rate(from, to).await {
-        Ok(rate) => {
-            let rate_str = rate.to_string();
-            let inverse_rate = if rate > BigDecimal::from(0) {
-                (BigDecimal::from(1) / &rate).to_string()
-            } else {
-                "0".to_string()
-            };
-            
-            let response = RateResponse {
-                pair: format!("{}/{}", from, to),
-                base_currency: from.to_string(),
-                quote_currency: to.to_string(),
-                rate: rate_str.clone(),
-                inverse_rate,
-                spread_percentage: "0.0".to_string(), // Fixed peg has no spread
-                last_updated: Utc::now(),
-                source: if from == "NGN" && to == "cNGN" || from == "cNGN" && to == "NGN" {
-                    "fixed_peg".to_string()
-                } else {
-                    "external_api".to_string()
-                },
-                timestamp: Utc::now(),
-            };
-
-            // Cache the response
-            if let Some(ref cache) = state.cache {
-                let ttl = Duration::from_secs(30);
-                let _ = cache.set(cache_key, &response, Some(ttl)).await;
-            }
-
-            // Build response with headers
-            let etag = generate_etag(&rate_str, &response.timestamp);
-            let mut headers = HeaderMap::new();
-            headers.insert(header::CACHE_CONTROL, "public, max-age=30".parse().unwrap());
-            headers.insert(header::ETAG, etag.parse().unwrap());
-            headers.insert(
-                header::LAST_MODIFIED,
-                response.last_updated.format("%a, %d %b %Y %H:%M:%S GMT").to_string().parse().unwrap(),
-            );
-            add_cors_headers(&mut headers);
-
-            Ok((StatusCode::OK, headers, Json(response)).into_response())
-        }
+    // Fetch rate from service with fixed-peg fallback
+    let rate = match state.exchange_rate_service.get_rate(from, to).await {
+        Ok(rate) => rate,
         Err(e) => {
-            error!("Failed to fetch rate {}/{}: {}", from, to, e);
-            Err(build_error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "RATE_SERVICE_UNAVAILABLE",
-                "Exchange rate service temporarily unavailable",
-                None,
-                None,
-                Some(60),
-            ))
+            if let Some(fallback_rate) = fixed_peg_rate(from, to) {
+                warn!(
+                    "Rate service failed for {}/{} ({}), falling back to fixed peg",
+                    from, to, e
+                );
+                fallback_rate
+            } else {
+                error!("Failed to fetch rate {}/{}: {}", from, to, e);
+                return Err(build_error_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "RATE_SERVICE_UNAVAILABLE",
+                    "Exchange rate service temporarily unavailable",
+                    None,
+                    None,
+                    Some(60),
+                ));
+            }
         }
+    };
+
+    let rate_str = rate.to_string();
+    let inverse_rate = if rate > BigDecimal::from(0) {
+        (BigDecimal::from(1) / &rate).to_string()
+    } else {
+        "0".to_string()
+    };
+
+    let response = RateResponse {
+        pair: format!("{}/{}", from, to),
+        base_currency: from.to_string(),
+        quote_currency: to.to_string(),
+        rate: rate_str.clone(),
+        inverse_rate,
+        spread_percentage: "0.0".to_string(),
+        last_updated: Utc::now(),
+        source: if fixed_peg_rate(from, to).is_some() {
+            "fixed_peg".to_string()
+        } else {
+            "external_api".to_string()
+        },
+        timestamp: Utc::now(),
+    };
+
+    // Cache the response
+    if let Some(ref cache) = state.cache {
+        let ttl = Duration::from_secs(30);
+        let _ = cache.set(cache_key, &response, Some(ttl)).await;
     }
+
+    // Build response with headers
+    let etag = generate_etag(&rate_str, &response.timestamp);
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CACHE_CONTROL, "public, max-age=30".parse().unwrap());
+    headers.insert(header::ETAG, etag.parse().unwrap());
+    headers.insert(
+        header::LAST_MODIFIED,
+        response.last_updated.format("%a, %d %b %Y %H:%M:%S GMT").to_string().parse().unwrap(),
+    );
+    add_cors_headers(&mut headers);
+
+    Ok((StatusCode::OK, headers, Json(response)).into_response())
 }
 
 /// Handle multiple pairs query
@@ -357,31 +372,39 @@ async fn handle_multiple_pairs(
             ));
         }
 
-        match state.exchange_rate_service.get_rate(from, to).await {
-            Ok(rate) => {
-                rates.push(RateInfo {
-                    pair: pair_str.to_string(),
-                    rate: rate.to_string(),
-                    last_updated: Utc::now(),
-                    source: if from == "NGN" && to == "cNGN" || from == "cNGN" && to == "NGN" {
-                        "fixed_peg".to_string()
-                    } else {
-                        "external_api".to_string()
-                    },
-                });
-            }
+        let rate = match state.exchange_rate_service.get_rate(from, to).await {
+            Ok(rate) => rate,
             Err(e) => {
-                error!("Failed to fetch rate for {}: {}", pair_str, e);
-                return Err(build_error_response(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "RATE_SERVICE_UNAVAILABLE",
-                    "Exchange rate service temporarily unavailable",
-                    None,
-                    None,
-                    Some(60),
-                ));
+                if let Some(fallback_rate) = fixed_peg_rate(from, to) {
+                    warn!(
+                        "Rate service failed for {} ({}), falling back to fixed peg",
+                        pair_str, e
+                    );
+                    fallback_rate
+                } else {
+                    error!("Failed to fetch rate for {}: {}", pair_str, e);
+                    return Err(build_error_response(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "RATE_SERVICE_UNAVAILABLE",
+                        "Exchange rate service temporarily unavailable",
+                        None,
+                        None,
+                        Some(60),
+                    ));
+                }
             }
-        }
+        };
+
+        rates.push(RateInfo {
+            pair: pair_str.to_string(),
+            rate: rate.to_string(),
+            last_updated: Utc::now(),
+            source: if fixed_peg_rate(from, to).is_some() {
+                "fixed_peg".to_string()
+            } else {
+                "external_api".to_string()
+            },
+        });
     }
 
     let response = MultipleRatesResponse {
@@ -404,31 +427,43 @@ async fn handle_all_pairs(
     let mut rates_map = HashMap::new();
 
     for (from, to) in SUPPORTED_PAIRS {
-        match state.exchange_rate_service.get_rate(from, to).await {
-            Ok(rate) => {
-                let rate_str = rate.to_string();
-                let inverse_rate = if rate > BigDecimal::from(0) {
-                    (BigDecimal::from(1) / &rate).to_string()
-                } else {
-                    "0".to_string()
-                };
-
-                rates_map.insert(
-                    format!("{}/{}", from, to),
-                    RateDetail {
-                        rate: rate_str,
-                        inverse_rate,
-                        spread: "0.0".to_string(),
-                        last_updated: Utc::now(),
-                        source: "fixed_peg".to_string(),
-                    },
-                );
-            }
+        let rate = match state.exchange_rate_service.get_rate(from, to).await {
+            Ok(rate) => rate,
             Err(e) => {
-                error!("Failed to fetch rate {}/{}: {}", from, to, e);
-                // Continue with other pairs instead of failing completely
+                if let Some(fallback_rate) = fixed_peg_rate(from, to) {
+                    warn!(
+                        "Rate service failed for {}/{} ({}), falling back to fixed peg",
+                        from, to, e
+                    );
+                    fallback_rate
+                } else {
+                    error!("Failed to fetch rate {}/{}: {}", from, to, e);
+                    continue;
+                }
             }
-        }
+        };
+
+        let rate_str = rate.to_string();
+        let inverse_rate = if rate > BigDecimal::from(0) {
+            (BigDecimal::from(1) / &rate).to_string()
+        } else {
+            "0".to_string()
+        };
+
+        rates_map.insert(
+            format!("{}/{}", from, to),
+            RateDetail {
+                rate: rate_str,
+                inverse_rate,
+                spread: "0.0".to_string(),
+                last_updated: Utc::now(),
+                source: if fixed_peg_rate(from, to).is_some() {
+                    "fixed_peg".to_string()
+                } else {
+                    "external_api".to_string()
+                },
+            },
+        );
     }
 
     if rates_map.is_empty() {
@@ -587,34 +622,34 @@ mod tests {
     #[test]
     fn test_is_currency_supported() {
         assert!(is_currency_supported("NGN"));
-        assert!(is_currency_supported("cNGN"));
-        assert!(!is_currency_supported("USD"));
+        assert!(is_currency_supported("USD"));
+        assert!(!is_currency_supported("cNGN"));
         assert!(!is_currency_supported("BTC"));
     }
 
     #[test]
     fn test_is_pair_supported() {
-        assert!(is_pair_supported("NGN", "cNGN"));
-        assert!(is_pair_supported("cNGN", "NGN"));
-        assert!(!is_pair_supported("USD", "NGN"));
-        assert!(!is_pair_supported("NGN", "USD"));
+        assert!(is_pair_supported("USD", "NGN"));
+        assert!(is_pair_supported("NGN", "USD"));
+        assert!(!is_pair_supported("NGN", "cNGN"));
+        assert!(!is_pair_supported("cNGN", "NGN"));
     }
 
     #[test]
     fn test_generate_cache_key() {
         let query1 = RatesQuery {
-            from: Some("NGN".to_string()),
-            to: Some("cNGN".to_string()),
+            from: Some("USD".to_string()),
+            to: Some("NGN".to_string()),
             pairs: None,
         };
-        assert_eq!(generate_cache_key(&query1), "api:rates:NGN:cNGN");
+        assert_eq!(generate_cache_key(&query1), "api:rates:USD:NGN");
 
         let query2 = RatesQuery {
             from: None,
             to: None,
-            pairs: Some("NGN/cNGN,USD/NGN".to_string()),
+            pairs: Some("USD/NGN,NGN/USD".to_string()),
         };
-        assert_eq!(generate_cache_key(&query2), "api:rates:NGN-cNGN_USD-NGN");
+        assert_eq!(generate_cache_key(&query2), "api:rates:USD-NGN_NGN-USD");
 
         let query3 = RatesQuery {
             from: None,
@@ -628,7 +663,7 @@ mod tests {
     fn test_get_supported_currencies() {
         let currencies = get_supported_currencies();
         assert!(currencies.contains(&"NGN".to_string()));
-        assert!(currencies.contains(&"cNGN".to_string()));
+        assert!(currencies.contains(&"USD".to_string()));
         assert_eq!(currencies.len(), 2);
     }
 }

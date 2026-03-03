@@ -22,7 +22,13 @@ detect_os() {
 detect_distro() {
     if [ -f /etc/os-release ]; then
         . /etc/os-release
-        echo "$ID"
+        if [ -n "$ID" ]; then
+            echo "$ID"
+        elif [ -n "$ID_LIKE" ]; then
+            echo "${ID_LIKE%% *}"
+        else
+            echo "unknown"
+        fi
     elif [ -f /etc/arch-release ]; then
         echo "arch"
     elif [ -f /etc/debian_version ]; then
@@ -32,6 +38,46 @@ detect_distro() {
     fi
 }
 
+normalize_distro() {
+    case "$1" in
+        arch|archlinux|manjaro|endeavouros|blackarch|garuda|artix|cachyos)
+            echo "arch"
+            ;;
+        debian|ubuntu|linuxmint|pop)
+            echo "debian"
+            ;;
+        fedora|rhel|centos|rocky|almalinux)
+            echo "fedora"
+            ;;
+        *)
+            echo "$1"
+            ;;
+    esac
+}
+
+detect_arch_pgdata() {
+    if [ -n "${PGDATA:-}" ]; then
+        echo "$PGDATA"
+        return
+    fi
+
+    local pgroot
+    pgroot="$(systemctl cat postgresql 2>/dev/null | sed -n 's/.*Environment=PGROOT=\([^[:space:]]*\).*/\1/p' | head -n1)"
+    if [ -n "$pgroot" ]; then
+        echo "$pgroot/data"
+        return
+    fi
+
+    for dir in /var/lib/postgres/data /var/lib/postgresql/data /var/lib/pgsql/data; do
+        if [ -d "$dir" ] || [ -f "$dir/PG_VERSION" ]; then
+            echo "$dir"
+            return
+        fi
+    done
+
+    echo "/var/lib/postgres/data"
+}
+
 OS=$(detect_os)
 DISTRO=""
 
@@ -39,7 +85,7 @@ DISTRO=""
 echo "🔍 Detecting operating system..."
 case "$OS" in
     linux)
-        DISTRO=$(detect_distro)
+        DISTRO=$(normalize_distro "$(detect_distro)")
         echo "✅ Detected OS: Linux ($DISTRO)"
         ;;
     macos)
@@ -72,14 +118,14 @@ if ! command -v psql &> /dev/null; then
     echo "🐘 Installing PostgreSQL..."
     if [[ "$OS" == "linux" ]]; then
         case "$DISTRO" in
-            arch|manjaro|endeavouros|blackarch)
+            arch)
                 sudo pacman -Sy --noconfirm postgresql
                 ;;
-            debian|ubuntu|linuxmint|pop)
+            debian)
                 sudo apt update
                 sudo apt install -y postgresql postgresql-contrib
                 ;;
-            fedora|rhel|centos|rocky|almalinux)
+            fedora)
                 sudo dnf install -y postgresql-server postgresql-contrib
                 ;;
             *)
@@ -103,13 +149,13 @@ if ! command -v redis-cli &> /dev/null; then
     echo "🧠 Installing Redis..."
     if [[ "$OS" == "linux" ]]; then
         case "$DISTRO" in
-            arch|manjaro|endeavouros|blackarch)
+            arch)
                 sudo pacman -Sy --noconfirm redis
                 ;;
-            debian|ubuntu|linuxmint|pop)
+            debian)
                 sudo apt install -y redis-server
                 ;;
-            fedora|rhel|centos|rocky|almalinux)
+            fedora)
                 sudo dnf install -y redis
                 ;;
             *)
@@ -132,15 +178,23 @@ fi
 echo "🔄 Starting services..."
 if [[ "$OS" == "linux" ]]; then
     case "$DISTRO" in
-        arch|manjaro|endeavouros|blackarch)
+        arch)
+            ARCH_PGDATA="$(detect_arch_pgdata)"
+            echo "ℹ️  Using PostgreSQL data directory: $ARCH_PGDATA"
             # Initialize PostgreSQL database if not already done
-            if [ ! -d "/var/lib/postgres/data" ]; then
-                sudo -u postgres initdb -D /var/lib/postgres/data
+            if sudo -u postgres test -f "$ARCH_PGDATA/PG_VERSION"; then
+                echo "✅ Existing PostgreSQL cluster detected"
+            elif sudo find "$ARCH_PGDATA" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null | grep -q .; then
+                echo "⚠️  PostgreSQL data directory is not empty and PG_VERSION is missing."
+                echo "⚠️  Skipping initdb to avoid overwriting existing files."
+            else
+                sudo install -d -m 700 -o postgres -g postgres "$ARCH_PGDATA"
+                sudo -u postgres initdb -D "$ARCH_PGDATA"
             fi
             sudo systemctl start postgresql
             sudo systemctl start redis
             ;;
-        debian|ubuntu|linuxmint|pop|fedora|rhel|centos|rocky|almalinux)
+        debian|fedora)
             sudo systemctl start postgresql
             sudo systemctl start redis
             ;;

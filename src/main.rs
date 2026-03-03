@@ -464,17 +464,50 @@ async fn main() -> anyhow::Result<()> {
         let fee_service =
             std::sync::Arc::new(services::fee_structure::FeeStructureService::new(fee_repo));
 
-        let exchange_rate_service = std::sync::Arc::new(
-            services::exchange_rate::ExchangeRateService::new(
-                rate_repo,
-                services::exchange_rate::ExchangeRateServiceConfig::default(),
-            )
-            .with_cache(cache.clone())
-            .add_provider(std::sync::Arc::new(
-                services::rate_providers::FixedRateProvider::new(),
-            ))
-            .with_fee_service(fee_service.clone()),
-        );
+        let mut exchange_rate_service = services::exchange_rate::ExchangeRateService::new(
+            rate_repo,
+            services::exchange_rate::ExchangeRateServiceConfig::default(),
+        )
+        .with_cache(cache.clone())
+        .add_provider(std::sync::Arc::new(
+            services::rate_providers::FixedRateProvider::new(),
+        ));
+
+        if let Ok(api_url) = std::env::var("EXTERNAL_RATE_API_URL") {
+            let api_url = api_url.trim().to_string();
+            if !api_url.is_empty() {
+                let api_key = std::env::var("EXTERNAL_RATE_API_KEY")
+                    .ok()
+                    .and_then(|k| {
+                        let trimmed = k.trim().to_string();
+                        if trimmed.is_empty() {
+                            None
+                        } else {
+                            Some(trimmed)
+                        }
+                    });
+                let timeout_secs = std::env::var("EXTERNAL_RATE_TIMEOUT_SECONDS")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(10);
+
+                let external_provider =
+                    services::rate_providers::ExternalApiProvider::new(api_url.clone(), api_key)
+                        .with_timeout(timeout_secs);
+
+                exchange_rate_service =
+                    exchange_rate_service.add_provider(std::sync::Arc::new(external_provider));
+
+                info!(
+                    external_rate_api_url = %api_url,
+                    timeout_seconds = timeout_secs,
+                    "External rate provider enabled"
+                );
+            }
+        }
+
+        let exchange_rate_service =
+            std::sync::Arc::new(exchange_rate_service.with_fee_service(fee_service.clone()));
 
         let quote_service = std::sync::Arc::new(services::onramp_quote::OnrampQuoteService::new(
             exchange_rate_service,
@@ -537,11 +570,47 @@ async fn main() -> anyhow::Result<()> {
         
         let repository = ExchangeRateRepository::new(pool.clone());
         let config = ExchangeRateServiceConfig::default();
-        let mut exchange_rate_service = ExchangeRateService::new(repository, config);
+        let mut exchange_rate_service = ExchangeRateService::new(repository, config)
+            .add_provider(std::sync::Arc::new(
+                services::rate_providers::FixedRateProvider::new(),
+            ));
         
         // Add cache to exchange rate service if available
         if let Some(ref cache) = redis_cache {
             exchange_rate_service = exchange_rate_service.with_cache(cache.clone());
+        }
+
+        if let Ok(api_url) = std::env::var("EXTERNAL_RATE_API_URL") {
+            let api_url = api_url.trim().to_string();
+            if !api_url.is_empty() {
+                let api_key = std::env::var("EXTERNAL_RATE_API_KEY")
+                    .ok()
+                    .and_then(|k| {
+                        let trimmed = k.trim().to_string();
+                        if trimmed.is_empty() {
+                            None
+                        } else {
+                            Some(trimmed)
+                        }
+                    });
+                let timeout_secs = std::env::var("EXTERNAL_RATE_TIMEOUT_SECONDS")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(10);
+
+                let external_provider =
+                    services::rate_providers::ExternalApiProvider::new(api_url.clone(), api_key)
+                        .with_timeout(timeout_secs);
+
+                exchange_rate_service =
+                    exchange_rate_service.add_provider(std::sync::Arc::new(external_provider));
+
+                info!(
+                    external_rate_api_url = %api_url,
+                    timeout_seconds = timeout_secs,
+                    "External rate provider enabled for /api/rates"
+                );
+            }
         }
         
         let rates_state = api::rates::RatesState {

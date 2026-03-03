@@ -7,6 +7,7 @@ use crate::payments::types::{
 };
 use crate::payments::utils::{verify_hmac_sha512_hex, PaymentHttpClient};
 use async_trait::async_trait;
+use dotenv::dotenv;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use std::time::Duration;
@@ -37,6 +38,7 @@ impl Default for PaystackConfig {
 
 impl PaystackConfig {
     pub fn from_env() -> PaymentResult<Self> {
+        dotenv::dotenv().ok();
         let secret_key =
             std::env::var("PAYSTACK_SECRET_KEY").map_err(|_| PaymentError::ValidationError {
                 message: "PAYSTACK_SECRET_KEY environment variable is required".to_string(),

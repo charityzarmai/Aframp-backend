@@ -8,8 +8,10 @@ use super::exchange_rate::{ExchangeRateError, ExchangeRateResult, RateData, Rate
 use async_trait::async_trait;
 use bigdecimal::BigDecimal;
 use chrono::Utc;
-#[cfg(test)]
+use reqwest::Client as HttpClient;
+use serde_json::Value;
 use std::str::FromStr;
+use std::time::Duration;
 use tracing::debug;
 
 /// Fixed rate provider for cNGN/NGN 1:1 peg
@@ -84,6 +86,7 @@ pub struct ExternalApiProvider {
     api_key: Option<String>,
     supported_pairs: Vec<(String, String)>,
     timeout_seconds: u64,
+    http_client: HttpClient,
 }
 
 impl ExternalApiProvider {
@@ -93,6 +96,7 @@ impl ExternalApiProvider {
             api_key,
             supported_pairs: Vec::new(),
             timeout_seconds: 10,
+            http_client: HttpClient::new(),
         }
     }
 
@@ -105,16 +109,140 @@ impl ExternalApiProvider {
         self.supported_pairs.push((from, to));
         self
     }
+
+    fn parse_decimal(value: &Value) -> Option<BigDecimal> {
+        match value {
+            Value::Number(num) => BigDecimal::from_str(&num.to_string()).ok(),
+            Value::String(s) => BigDecimal::from_str(s).ok(),
+            _ => None,
+        }
+    }
+
+    fn extract_rate(payload: &Value, to: &str) -> Option<BigDecimal> {
+        let direct_rate_candidates = [
+            payload.get("rate"),
+            payload.get("result"),
+            payload.get("price"),
+            payload.get("conversion_rate"),
+            payload.get("buy_rate"),
+            payload.get("sell_rate"),
+            payload.get("data").and_then(|v| v.get("rate")),
+            payload.get("data").and_then(|v| v.get("result")),
+            payload.get("data").and_then(|v| v.get("price")),
+            payload.get("info").and_then(|v| v.get("rate")),
+        ];
+
+        for candidate in direct_rate_candidates.into_iter().flatten() {
+            if let Some(rate) = Self::parse_decimal(candidate) {
+                return Some(rate);
+            }
+        }
+
+        let to_upper = to.to_uppercase();
+        let to_lower = to.to_lowercase();
+        let rates_objects = [
+            payload.get("rates"),
+            payload.get("result"),
+            payload.get("data").and_then(|v| v.get("rates")),
+            payload.get("data").and_then(|v| v.get("result")),
+        ];
+
+        for maybe_rates in rates_objects {
+            if let Some(rates) = maybe_rates.and_then(|v| v.as_object()) {
+                for key in [to, to_upper.as_str(), to_lower.as_str()] {
+                    if let Some(value) = rates.get(key) {
+                        if let Some(rate) = Self::parse_decimal(value) {
+                            return Some(rate);
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    async fn request_rate(&self, from: &str, to: &str) -> ExchangeRateResult<BigDecimal> {
+        let is_fastforex = self.api_url.contains("fastforex.io");
+        let mut url = reqwest::Url::parse(&self.api_url).map_err(|e| {
+            ExchangeRateError::ProviderError(format!("Invalid external API URL: {}", e))
+        })?;
+        let has_api_key = url.query_pairs().any(|(k, _)| k == "api_key");
+        {
+            let mut query = url.query_pairs_mut();
+            query.append_pair("from", from);
+            query.append_pair("to", to);
+            if is_fastforex {
+                if let Some(api_key) = &self.api_key {
+                    if !has_api_key {
+                        query.append_pair("api_key", api_key);
+                    }
+                }
+            }
+        }
+
+        let mut request = self
+            .http_client
+            .get(url)
+            .timeout(Duration::from_secs(self.timeout_seconds));
+
+        if let Some(api_key) = &self.api_key {
+            request = request.header("x-api-key", api_key);
+            if !is_fastforex {
+                request = request.bearer_auth(api_key);
+            }
+        }
+
+        let response = request.send().await.map_err(|e| {
+            ExchangeRateError::ProviderError(format!("External API request failed: {}", e))
+        })?;
+        let status = response.status();
+
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            let body_snippet: String = body.chars().take(256).collect();
+            let message = if body_snippet.is_empty() {
+                format!("External API returned error status {}", status)
+            } else {
+                format!(
+                    "External API returned error status {}: {}",
+                    status, body_snippet
+                )
+            };
+            return Err(ExchangeRateError::ProviderError(message));
+        }
+
+        let payload: Value = response.json().await.map_err(|e| {
+            ExchangeRateError::ProviderError(format!("Invalid external API JSON response: {}", e))
+        })?;
+
+        let rate = Self::extract_rate(&payload, to).ok_or_else(|| {
+            ExchangeRateError::ProviderError(format!(
+                "External API response does not contain a usable rate for {}/{}",
+                from, to
+            ))
+        })?;
+
+        if rate <= BigDecimal::from(0) {
+            return Err(ExchangeRateError::InvalidRate(format!(
+                "External API returned non-positive rate for {}/{}",
+                from, to
+            )));
+        }
+
+        Ok(rate)
+    }
 }
 
 #[async_trait]
 impl RateProvider for ExternalApiProvider {
     async fn fetch_rate(&self, from: &str, to: &str) -> ExchangeRateResult<RateData> {
         // Check if this is a supported pair
-        let is_supported = self
-            .supported_pairs
-            .iter()
-            .any(|(f, t)| f == from && t == to);
+        let is_supported = self.supported_pairs.is_empty()
+            || self
+                .supported_pairs
+                .iter()
+                .any(|(f, t)| f == from && t == to);
 
         if !is_supported {
             return Err(ExchangeRateError::RateNotFound {
@@ -123,16 +251,33 @@ impl RateProvider for ExternalApiProvider {
             });
         }
 
-        // TODO: Implement actual API call to external service
-        // For now, return an error indicating it's not implemented
         debug!(
-            "ExternalApiProvider: Would fetch rate from {} for {} -> {}",
+            "ExternalApiProvider: Fetching rate from {} for {} -> {}",
             self.api_url, from, to
         );
 
-        Err(ExchangeRateError::ProviderError(
-            "External API provider not yet implemented".to_string(),
-        ))
+        let rate = match self.request_rate(from, to).await {
+            Ok(rate) => rate,
+            Err(direct_error) => match self.request_rate(to, from).await {
+                Ok(reverse_rate) => BigDecimal::from(1) / reverse_rate,
+                Err(reverse_error) => {
+                    return Err(ExchangeRateError::ProviderError(format!(
+                        "Failed to fetch direct {}/{} ({}) and reverse {}/{} ({})",
+                        from, to, direct_error, to, from, reverse_error
+                    )));
+                }
+            },
+        };
+
+        Ok(RateData {
+            currency_pair: format!("{}/{}", from, to),
+            base_rate: rate.clone(),
+            buy_rate: rate.clone(),
+            sell_rate: rate,
+            spread: BigDecimal::from(0),
+            source: self.api_url.clone(),
+            last_updated: Utc::now(),
+        })
     }
 
     fn get_supported_pairs(&self) -> Vec<(String, String)> {
@@ -140,9 +285,13 @@ impl RateProvider for ExternalApiProvider {
     }
 
     async fn is_healthy(&self) -> bool {
-        // TODO: Implement health check by pinging the API
-        // For now, return false since it's not implemented
-        false
+        let (from, to) = self
+            .supported_pairs
+            .first()
+            .map(|(f, t)| (f.as_str(), t.as_str()))
+            .unwrap_or(("NGN", "USD"));
+
+        self.request_rate(from, to).await.is_ok() || self.request_rate(to, from).await.is_ok()
     }
 
     fn name(&self) -> &str {
