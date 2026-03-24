@@ -23,7 +23,7 @@ database = [ "dep:tokio", "dep:async-trait", "dep:uuid", "dep:chrono", "dep:serd
 cache = ["dep:redis", "dep:bb8", "dep:bb8-redis", "dep:moka", "dep:prometheus", "dep:tokio-util", "database"]
 database = [ "dep:tokio", "dep:async-trait", "dep:uuid", "dep:chrono", "dep:serde", "dep:serde_json", "dep:tracing", "dep:tracing-subscriber", "dep:axum", "dep:tower", "dep:tower-http", "dep:regex", "dep:http", "dep:sqlx", "dep:hmac", "dep:sha2", "dep:hex", "dep:bigdecimal", "dep:rust_decimal", "dep:stellar-strkey", "dep:ed25519-dalek", "dep:stellar-xdr", "dep:jsonwebtoken" ]
 database = [ "dep:tokio", "dep:async-trait", "dep:uuid", "dep:chrono", "dep:serde", "dep:serde_json", "dep:tracing", "dep:tracing-subscriber", "dep:axum", "dep:tower", "dep:tower-http", "dep:regex", "dep:http", "dep:sqlx", "dep:hmac", "dep:sha2", "dep:hex", "dep:bigdecimal", "dep:rust_decimal", "dep:stellar-strkey", "dep:ed25519-dalek", "dep:stellar-xdr", "dep:utoipa", "dep:utoipa-swagger-ui" ]
-cache = ["dep:redis", "dep:bb8", "dep:bb8-redis", "database"]
+cache = ["dep:redis", "dep:bb8", "dep:bb8-redis", "dep:moka", "dep:tokio-util", "database"]
 
 # Distributed tracing via OpenTelemetry (Issue #104).
 # Enables OTLP export to Jaeger / Grafana Tempo, W3C trace-context propagation,

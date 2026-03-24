@@ -365,6 +365,7 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+
     // Initialize notification service
     let notification_service = std::sync::Arc::new(services::notification::NotificationService::new());
 
@@ -1017,6 +1018,22 @@ async fn main() -> anyhow::Result<()> {
     // ── OpenAPI / Swagger UI (Issue #114) ────────────────────────────────────
     let openapi_routes = api::openapi::openapi_routes();
 
+    // Setup transaction history routes
+    let history_routes = if let Some(pool) = db_pool.clone() {
+        let history_state = std::sync::Arc::new(api::transaction_history::TransactionHistoryState {
+            pool: std::sync::Arc::new(pool),
+            cache: redis_cache.clone().map(std::sync::Arc::new),
+        });
+        Router::new()
+            .route("/api/transactions", get(api::transaction_history::get_transaction_history))
+            .route("/api/transactions/export", get(api::transaction_history::export_transaction_history))
+            .with_state(history_state)
+    } else {
+        info!("⏭️  Skipping transaction history routes (no database)");
+        Router::new()
+    };
+
+
     let app = Router::new()
         .route("/", get(root))
         .route("/health", get(health))
@@ -1063,6 +1080,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(batch_routes)
         .merge(admin_routes)
         .merge(openapi_routes)
+        .merge(history_routes)
         .with_state(AppState {
             db_pool,
             redis_cache,
