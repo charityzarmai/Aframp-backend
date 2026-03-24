@@ -6,6 +6,7 @@ mod database;
 mod error;
 mod health;
 mod logging;
+mod metrics;
 mod middleware;
 mod payments;
 mod services;
@@ -28,6 +29,7 @@ use chains::stellar::config::StellarConfig;
 use database::{init_pool, PoolConfig};
 use dotenv::dotenv;
 use middleware::logging::{request_logging_middleware, UuidRequestId};
+use middleware::metrics::metrics_middleware;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::str::FromStr;
@@ -75,6 +77,9 @@ async fn shutdown_signal_with_notify(shutdown_tx: watch::Sender<bool>) {
 async fn main() -> anyhow::Result<()> {
     // Initialize advanced tracing
     init_tracing();
+
+    // Initialise Prometheus metrics registry
+    let _ = metrics::registry();
 
     dotenv().ok();
     let skip_externals = std::env::var("SKIP_EXTERNALS")
@@ -297,6 +302,21 @@ async fn main() -> anyhow::Result<()> {
     info!("🏥 Initializing health checker...");
     let health_checker =
         HealthChecker::new(db_pool.clone(), redis_cache.clone(), stellar_client.clone());
+
+    // Spawn background task to update DB pool connection gauge every 15 seconds
+    if let Some(pool) = db_pool.clone() {
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(15));
+            loop {
+                ticker.tick().await;
+                let stats = database::get_pool_stats(&pool);
+                metrics::database::connections_active()
+                    .with_label_values(&["primary"])
+                    .set((stats.size - stats.num_idle) as f64);
+            }
+        });
+    }
+
     // Initialize notification service
     let notification_service = std::sync::Arc::new(services::notification::NotificationService::new());
 
@@ -702,6 +722,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(health))
         .route("/health/ready", get(readiness))
         .route("/health/live", get(liveness))
+        .route("/metrics", get(metrics::handler::metrics_handler))
         .route("/api/stellar/account/{address}", get(get_stellar_account))
         .route(
             "/api/trustlines/operations",
@@ -746,6 +767,7 @@ async fn main() -> anyhow::Result<()> {
         .layer(
             ServiceBuilder::new()
                 .layer(SetRequestIdLayer::x_request_id(UuidRequestId))
+                .layer(axum::middleware::from_fn(metrics_middleware))
                 .layer(axum::middleware::from_fn(request_logging_middleware))
                 .layer(PropagateRequestIdLayer::x_request_id()),
         );

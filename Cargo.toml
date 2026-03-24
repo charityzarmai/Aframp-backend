@@ -57,6 +57,9 @@ ed25519-dalek = { version = "2.1.1", optional = true }
 stellar-xdr = { version = "25.0.0", features = ["next", "base64"], optional = true }
 nuban = "1.1.0"
 
+# Prometheus metrics
+prometheus = { version = "0.13", features = ["process"] }
+
 
 
 [[bin]]
