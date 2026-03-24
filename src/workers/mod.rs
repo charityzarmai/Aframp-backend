@@ -15,6 +15,19 @@ pub struct TransactionMonitorWorker {
     pub tx_service: TransactionService,
     pub stellar_url: String,
     pub http_client: reqwest::Client,
+pub mod maintenance;
+pub mod offramp_processor;
+pub mod payment_poller;
+pub mod transaction_monitor;
+pub mod webhook_retry;
+pub mod batch_processor;
+pub mod bill_processor {
+    pub mod account_verification;
+    pub mod payment_executor;
+    pub mod providers;
+    pub mod refund_handler;
+    pub mod token_manager;
+    pub mod types;
 }
 
 impl TransactionMonitorWorker {

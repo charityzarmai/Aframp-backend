@@ -6,6 +6,7 @@ mod database;
 mod error;
 mod health;
 mod logging;
+mod metrics;
 mod middleware;
 mod payments;
 mod services;
@@ -29,6 +30,7 @@ use chains::stellar::config::StellarConfig;
 use database::{init_pool, PoolConfig};
 use dotenv::dotenv;
 use middleware::logging::{request_logging_middleware, UuidRequestId};
+use middleware::metrics::metrics_middleware;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::str::FromStr;
@@ -82,6 +84,12 @@ async fn main() -> anyhow::Result<()> {
     // 1. Load application configuration from environment variables.
     //    This must happen before init_tracer so the OTEL_* vars are visible.
     // -------------------------------------------------------------------------
+    // Initialize advanced tracing
+    init_tracing();
+
+    // Initialise Prometheus metrics registry
+    let _ = metrics::registry();
+
     dotenv().ok();
 
     let app_config = AppConfig::from_env().map_err(|e| {
@@ -336,6 +344,21 @@ async fn main() -> anyhow::Result<()> {
     info!("🏥 Initializing health checker...");
     let health_checker =
         HealthChecker::new(db_pool.clone(), redis_cache.clone(), stellar_client.clone());
+
+    // Spawn background task to update DB pool connection gauge every 15 seconds
+    if let Some(pool) = db_pool.clone() {
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(15));
+            loop {
+                ticker.tick().await;
+                let stats = database::get_pool_stats(&pool);
+                metrics::database::connections_active()
+                    .with_label_values(&["primary"])
+                    .set((stats.size - stats.num_idle) as f64);
+            }
+        });
+    }
+
     // Initialize notification service
     let notification_service = std::sync::Arc::new(services::notification::NotificationService::new());
 
@@ -414,6 +437,53 @@ async fn main() -> anyhow::Result<()> {
         }
     } else {
         info!("Offramp processor worker disabled (OFFRAMP_PROCESSOR_ENABLED=false)");
+    }
+
+    // Start Payment Poller Worker
+    let poller_enabled = std::env::var("PAYMENT_POLLER_ENABLED")
+        .unwrap_or_else(|_| "true".to_string())
+        .to_lowercase()
+        != "false";
+    if poller_enabled {
+        if let (Some(pool), Some(factory)) = (db_pool.clone(), provider_factory.clone()) {
+            let poller_config = workers::payment_poller::PaymentPollerConfig::from_env();
+            info!(
+                interval_secs = poller_config.poll_interval.as_secs(),
+                max_retries = poller_config.max_retries,
+                "Starting payment poller worker"
+            );
+            let tx_repo = std::sync::Arc::new(
+                database::transaction_repository::TransactionRepository::new(pool.clone()),
+            );
+            let mut poller_providers = Vec::new();
+            for provider_name in factory.list_available_providers() {
+                if let Ok(p) = factory.get_provider(provider_name) {
+                    poller_providers.push(
+                        std::sync::Arc::from(p)
+                            as std::sync::Arc<dyn payments::provider::PaymentProvider>,
+                    );
+                }
+            }
+            let poller_orchestrator = std::sync::Arc::new(
+                services::payment_orchestrator::PaymentOrchestrator::new(
+                    poller_providers,
+                    tx_repo,
+                    services::payment_orchestrator::OrchestratorConfig::default(),
+                ),
+            );
+            let poller = workers::payment_poller::PaymentPollerWorker::new(
+                pool,
+                factory,
+                poller_orchestrator,
+                poller_config,
+            );
+            tokio::spawn(poller.run(worker_shutdown_rx.clone()));
+            info!("✅ Payment poller worker started");
+        } else {
+            info!("⏭️  Skipping payment poller worker (missing db pool or provider factory)");
+        }
+    } else {
+        info!("Payment poller worker disabled (PAYMENT_POLLER_ENABLED=false)");
     }
 
     // Initialize webhook processor and retry worker
@@ -736,11 +806,46 @@ async fn main() -> anyhow::Result<()> {
         Router::new()
     };
     
+    // ── Batch transaction routes (Issue #125) ────────────────────────────────
+    let batch_routes = if let Some(pool) = db_pool.clone() {
+        let batch_state = api::batch::BatchState::new(std::sync::Arc::new(pool));
+        Router::new()
+            .route("/api/batch/cngn-transfer", post(api::batch::create_cngn_transfer_batch))
+            .route("/api/batch/fiat-payout",   post(api::batch::create_fiat_payout_batch))
+            .route("/api/batch/{batch_id}",    get(api::batch::get_batch_status))
+            .with_state(batch_state)
+    } else {
+        info!("Skipping batch routes (no database)");
+        Router::new()
+    };
+
+    // ── Admin scope management routes (Issue #132) ───────────────────────────
+    let admin_routes = if let Some(pool) = db_pool.clone() {
+        let scopes_state = api::admin::scopes::ScopesState {
+            db: std::sync::Arc::new(pool),
+        };
+        Router::new()
+            .route("/api/admin/scopes", get(api::admin::scopes::list_scopes))
+            .route(
+                "/api/admin/consumers/{consumer_id}/keys/{key_id}/scopes",
+                get(api::admin::scopes::get_key_scopes)
+                    .patch(api::admin::scopes::update_key_scopes),
+            )
+            .with_state(scopes_state)
+    } else {
+        info!("Skipping admin routes (no database)");
+        Router::new()
+    };
+
+    // ── OpenAPI / Swagger UI (Issue #114) ────────────────────────────────────
+    let openapi_routes = api::openapi::openapi_routes();
+
     let app = Router::new()
         .route("/", get(root))
         .route("/health", get(health))
         .route("/health/ready", get(readiness))
         .route("/health/live", get(liveness))
+        .route("/metrics", get(metrics::handler::metrics_handler))
         .route("/api/stellar/account/{address}", get(get_stellar_account))
         .route(
             "/api/trustlines/operations",
@@ -776,6 +881,9 @@ async fn main() -> anyhow::Result<()> {
         .merge(rates_routes)
         .merge(fees_routes)
         .merge(webhook_routes)
+        .merge(batch_routes)
+        .merge(admin_routes)
+        .merge(openapi_routes)
         .with_state(AppState {
             db_pool,
             redis_cache,
@@ -805,6 +913,7 @@ async fn main() -> anyhow::Result<()> {
                 .layer(axum::middleware::from_fn(
                     crate::telemetry::middleware::tracing_middleware,  // Issue #104
                 ))
+                .layer(axum::middleware::from_fn(metrics_middleware))
                 .layer(axum::middleware::from_fn(request_logging_middleware))
                 .layer(PropagateRequestIdLayer::x_request_id()),
         );
