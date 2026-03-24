@@ -1,6 +1,7 @@
 use crate::chains::stellar::client::StellarClient;
 use crate::database::bill_payment_repository::{BillPaymentRepository, BillPayment};
 use crate::database::transaction_repository::TransactionRepository;
+use crate::database::repository::Repository;
 use crate::services::notification::{NotificationService, NotificationType};
 use crate::workers::bill_processor::providers::BillProviderFactory;
 use crate::workers::bill_processor::types::*;

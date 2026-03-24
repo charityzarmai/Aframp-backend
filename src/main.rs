@@ -13,6 +13,7 @@ mod services;
 mod workers;
 
 // Imports
+use std::sync::Arc;
 use crate::config::AppConfig;
 use crate::health::{HealthChecker, HealthStatus};
 use crate::telemetry::tracer::{init_tracer, shutdown_tracer};    // Issue #104

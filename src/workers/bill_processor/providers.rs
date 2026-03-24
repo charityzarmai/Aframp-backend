@@ -260,7 +260,7 @@ impl VTPassAdapter {
 impl BillPaymentProvider for VTPassAdapter {
     async fn verify_account(
         &self,
-        _provider_code: &str,
+        provider_code: &str,
         account: &str,
         account_type: &str,
     ) -> Result<AccountInfo, ProcessingError> {
@@ -418,7 +418,7 @@ impl PaystackAdapter {
 impl BillPaymentProvider for PaystackAdapter {
     async fn verify_account(
         &self,
-        _provider_code: &str,
+        provider_code: &str,
         account: &str,
         account_type: &str,
     ) -> Result<AccountInfo, ProcessingError> {

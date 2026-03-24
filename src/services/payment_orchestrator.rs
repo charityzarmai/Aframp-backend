@@ -744,6 +744,7 @@ impl PaymentOrchestrator {
             ProviderName::Flutterwave => BigDecimal::from(14), // 1.4%
             ProviderName::Paystack => BigDecimal::from(15),    // 1.5%
             ProviderName::Mpesa => BigDecimal::from(20),       // 2.0%
+            ProviderName::Mock => BigDecimal::from(10),        // 1.0%
         };
 
         amount * rate / BigDecimal::from(1000)
