@@ -126,6 +126,9 @@ prometheus = { version = "0.13", features = ["process"] }
 tracing            = { version = "0.1",  optional = true }
 tracing-subscriber = { version = "0.3",  features = ["json", "env-filter", "fmt"], optional = true }
 
+# JWT authentication
+jsonwebtoken = { version = "9.3", optional = true }
+
 # ---------------------------------------------------------------------------
 # OpenTelemetry — distributed tracing (Issue #104, gated by "telemetry" feature)
 # ---------------------------------------------------------------------------

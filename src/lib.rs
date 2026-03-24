@@ -47,6 +47,10 @@ pub mod config;
 #[cfg(feature = "database")]
 pub mod api;
 
+// Auth module – JWT generation, validation, middleware
+#[cfg(feature = "database")]
+pub mod auth;
+
 // Health check module
 #[cfg(feature = "database")]
 pub mod health;

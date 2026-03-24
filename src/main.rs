@@ -1,4 +1,5 @@
 mod api;
+mod auth;
 mod cache;
 mod chains;
 mod config;
@@ -926,6 +927,25 @@ async fn main() -> anyhow::Result<()> {
         Router::new()
     };
     
+    // Setup auth routes
+    let auth_routes = {
+        let jwt_secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| {
+            tracing::warn!("JWT_SECRET not set – auth endpoints will be unavailable");
+            String::new()
+        });
+        if jwt_secret.len() >= 32 {
+            let auth_state = std::sync::Arc::new(auth::AuthHandlerState {
+                jwt_secret,
+                redis_cache: redis_cache.clone(),
+            });
+            info!("🔐 JWT auth routes enabled");
+            auth::auth_router(auth_state)
+        } else {
+            info!("⏭️  Skipping auth routes (JWT_SECRET not set or too short)");
+            Router::new()
+        }
+    };
+
     // ── Batch transaction routes (Issue #125) ────────────────────────────────
     let batch_routes = if let Some(pool) = db_pool.clone() {
         let batch_state = api::batch::BatchState::new(std::sync::Arc::new(pool));
