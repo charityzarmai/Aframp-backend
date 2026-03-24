@@ -10,8 +10,13 @@ pub mod mpesa;
 pub mod paystack;
 
 #[cfg(feature = "database")]
+pub mod mock;
+
+#[cfg(feature = "database")]
 pub use flutterwave::FlutterwaveProvider;
 #[cfg(feature = "database")]
 pub use mpesa::MpesaProvider;
 #[cfg(feature = "database")]
 pub use paystack::PaystackProvider;
+#[cfg(feature = "database")]
+pub use mock::MockProvider;

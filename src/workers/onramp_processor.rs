@@ -277,6 +277,21 @@ impl OnrampProcessor {
         debug!("Starting onramp processor cycle");
         self.expire_timed_out_payments().await?;
         self.poll_pending_transactions().await?;
+
+        let _timer = crate::metrics::worker::cycle_duration_seconds()
+            .with_label_values(&["onramp_processor"])
+            .start_timer();
+        crate::metrics::worker::cycles_total()
+            .with_label_values(&["onramp_processor"])
+            .inc();
+
+        // Stage 1: Check for payment timeouts
+        self.check_payment_timeouts().await?;
+
+        // Stage 2: Process pending transactions (polling fallback)
+        self.process_pending_transactions().await?;
+
+        // Stage 3: Monitor Stellar confirmations
         self.monitor_stellar_confirmations().await?;
         debug!("Onramp processor cycle complete");
         Ok(())
@@ -325,6 +340,9 @@ impl OnrampProcessor {
                 ),
             )
             .await?;
+
+            // Emit metric
+            metrics::inc_payments_failed("timeout");
         }
 
         Ok(())
@@ -455,6 +473,84 @@ impl OnrampProcessor {
                     status = ?status_resp.status,
                     "Provider poll: payment still pending"
                 );
+    /// Check payment status with provider directly
+    async fn check_payment_with_provider(&self, tx: &Transaction) -> Result<(), ProcessorError> {
+        let provider_ref = tx
+            .payment_reference
+            .as_ref()
+            .ok_or_else(|| ProcessorError::Internal("No payment reference".to_string()))?;
+
+        let provider_name = tx
+            .payment_provider
+            .as_ref()
+            .ok_or_else(|| ProcessorError::Internal("No payment provider".to_string()))?;
+
+        // Query provider for status
+        // This would call the payment orchestrator's status check
+        // For now, we log the attempt
+        debug!(
+            tx_id = %tx.transaction_id,
+            provider = %provider_name,
+            provider_ref = %provider_ref,
+            "Querying provider for payment status"
+        );
+
+        // TODO: Implement provider status query via PaymentOrchestrator
+        // If confirmed, call process_payment_confirmed()
+
+        Ok(())
+    }
+
+    /// Monitor Stellar for transaction confirmations
+    #[instrument(skip(self), fields(processor = "onramp"))]
+    async fn monitor_stellar_confirmations(&self) -> Result<(), ProcessorError> {
+        // Find transactions awaiting Stellar confirmation
+        let processing_txs = sqlx::query_as::<_, Transaction>(
+            r#"
+            SELECT * FROM transactions
+            WHERE status = 'processing'
+            AND blockchain_tx_hash IS NOT NULL
+            ORDER BY updated_at ASC
+            LIMIT 50
+            FOR UPDATE SKIP LOCKED
+            "#,
+        )
+        .fetch_all((*self.db).as_ref())
+        .await?;
+
+        for tx in processing_txs {
+            let tx_hash = tx
+                .blockchain_tx_hash
+                .as_ref()
+                .ok_or_else(|| ProcessorError::Internal("No blockchain hash".to_string()))?;
+
+            debug!(
+                tx_id = %tx.transaction_id,
+                stellar_hash = %tx_hash,
+                "Checking Stellar transaction confirmation"
+            );
+
+            match self.check_stellar_confirmation(tx_hash).await {
+                Ok(confirmed) => {
+                    if confirmed {
+                        info!(
+                            tx_id = %tx.transaction_id,
+                            stellar_hash = %tx_hash,
+                            "Stellar transaction confirmed"
+                        );
+
+                        // Mark as completed
+                        self.mark_transaction_completed(&tx.transaction_id, tx_hash).await?;
+                        metrics::inc_transfers_confirmed();
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        tx_id = %tx.transaction_id,
+                        error = %e,
+                        "Error checking Stellar confirmation"
+                    );
+                }
             }
         }
 
@@ -577,6 +673,8 @@ impl OnrampProcessor {
         .await?;
 
         info!(tx_id = %tx_id, "State: payment_received → processing");
+        info!(tx_id = %tx_id, "Transaction status updated to processing");
+        metrics::inc_payments_confirmed(provider.as_str());
 
         // Reload the fresh record for the transfer step
         let tx = repo
@@ -633,6 +731,9 @@ impl OnrampProcessor {
             )
             .await?;
             self.initiate_refund(tx, FailureReason::TrustlineNotFound).await?;
+            self.initiate_refund(tx, FailureReason::TrustlineNotFound)
+                .await?;
+            metrics::inc_transfers_failed("trustline_not_found");
             return Ok(());
         }
 
@@ -651,6 +752,9 @@ impl OnrampProcessor {
             )
             .await?;
             self.initiate_refund(tx, FailureReason::InsufficientCngnBalance).await?;
+            self.initiate_refund(tx, FailureReason::InsufficientCngnBalance)
+                .await?;
+            metrics::inc_transfers_failed("insufficient_balance");
             return Ok(());
         }
 
@@ -688,6 +792,7 @@ impl OnrampProcessor {
                     stellar_hash = %stellar_hash,
                     "Stellar tx hash persisted — monitoring worker will confirm"
                 );
+                metrics::inc_transfers_submitted();
             }
             Err(e) => {
                 error!(
@@ -708,6 +813,26 @@ impl OnrampProcessor {
                 )
                 .await?;
                 self.initiate_refund(tx, reason).await?;
+
+                // Determine if transient or permanent error
+                match e {
+                    ProcessorError::StellarTransientError(_) => {
+                        warn!("Transient Stellar error, will retry on next cycle");
+                        // Leave in processing state for retry
+                    }
+                    _ => {
+                        // Permanent error - mark failed and initiate refund
+                        self.mark_transaction_failed(
+                            &tx.transaction_id,
+                            FailureReason::StellarPermanentError,
+                            &e.to_string(),
+                        )
+                        .await?;
+                        self.initiate_refund(tx, FailureReason::StellarPermanentError)
+                            .await?;
+                        metrics::inc_transfers_failed("stellar_error");
+                    }
+                }
             }
         }
 
@@ -1125,6 +1250,9 @@ impl OnrampProcessor {
         .bind(&tx.transaction_id)
         .execute((*self.db).as_ref())
         .await?;
+        // TODO: Call PaymentOrchestrator to initiate refund
+        // For now, just log
+        metrics::inc_refunds_initiated(tx.payment_provider.as_deref().unwrap_or("unknown"));
 
         // Attempt refund with retry
         let mut last_err: Option<String> = None;
@@ -1275,5 +1403,56 @@ impl OnrampProcessor {
             .unwrap_or_else(|| format!("refund:{}", tx.transaction_id));
 
         Ok(refund_ref)
+// ============================================================================
+// Metrics (real Prometheus counters via crate::metrics)
+// ============================================================================
+
+mod metrics {
+    #[inline]
+    pub fn inc_payments_failed(reason: &str) {
+        crate::metrics::cngn::transactions_total()
+            .with_label_values(&["onramp", "failed"])
+            .inc();
+        crate::metrics::worker::errors_total()
+            .with_label_values(&["onramp_processor", reason])
+            .inc();
+    }
+
+    #[inline]
+    pub fn inc_payments_confirmed(provider: &str) {
+        crate::metrics::cngn::transactions_total()
+            .with_label_values(&["onramp", "completed"])
+            .inc();
+        let _ = provider; // label available on payment metrics
+    }
+
+    #[inline]
+    pub fn inc_transfers_submitted() {
+        crate::metrics::stellar::tx_submissions_total()
+            .with_label_values(&["success"])
+            .inc();
+    }
+
+    #[inline]
+    pub fn inc_transfers_confirmed() {
+        // already counted via cngn transactions_total completed
+    }
+
+    #[inline]
+    pub fn inc_transfers_failed(reason: &str) {
+        crate::metrics::stellar::tx_submissions_total()
+            .with_label_values(&["failed"])
+            .inc();
+        crate::metrics::worker::errors_total()
+            .with_label_values(&["onramp_processor", reason])
+            .inc();
+    }
+
+    #[inline]
+    pub fn inc_refunds_initiated(provider: &str) {
+        crate::metrics::cngn::transactions_total()
+            .with_label_values(&["onramp", "refunded"])
+            .inc();
+        let _ = provider;
     }
 }
