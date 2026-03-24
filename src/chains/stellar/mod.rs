@@ -8,3 +8,6 @@ pub mod types;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod stellar_service_tests;
