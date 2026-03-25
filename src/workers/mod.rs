@@ -1,5 +1,7 @@
 pub mod batch_processor;
 pub mod bill_processor;
+#[cfg(feature = "database")]
+pub mod key_rotation_worker;
 pub mod maintenance;
 pub mod offramp_processor;
 pub mod onramp_processor;

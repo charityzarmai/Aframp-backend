@@ -1182,6 +1182,19 @@ async fn main() -> anyhow::Result<()> {
         Router::new()
     };
 
+    // ── Key rotation routes (Issue #137) ─────────────────────────────────────
+    let key_rotation_routes = if let Some(pool) = db_pool.clone() {
+        let rotation_state = api::key_rotation::KeyRotationState {
+            db: std::sync::Arc::new(pool.clone()),
+        };
+        let rotation_service = services::key_rotation::KeyRotationService::new(pool.clone());
+        let rotation_worker = workers::key_rotation_worker::KeyRotationWorker::new(rotation_service);
+        tokio::spawn(rotation_worker.run(worker_shutdown_rx.clone()));
+        info!("✅ Key rotation worker started");
+        api::key_rotation::developer_rotation_router(rotation_state.clone())
+            .merge(api::key_rotation::admin_rotation_router(rotation_state))
+    } else {
+        info!("Skipping key rotation routes (no database)");
     // ── Developer self-service key routes (Issue #131) ───────────────────────
     let developer_routes = if let Some(pool) = db_pool.clone() {
         let dev_state = api::developer::keys::DeveloperKeysState {
@@ -1273,6 +1286,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(auth_routes)
         .merge(batch_routes)
         .merge(admin_routes)
+        .merge(key_rotation_routes)
         .merge(openapi_routes)
         .merge(recurring_routes)
         .merge(developer_routes)

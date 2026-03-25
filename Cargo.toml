@@ -185,6 +185,14 @@ path = "tests/api_key_integration.rs"
 required-features = ["integration"]
 
 # ---------------------------------------------------------------------------
+# Integration test — API key rotation & expiry (Issue #137)
+# ---------------------------------------------------------------------------
+[[test]]
+name = "key_rotation_integration"
+path = "tests/key_rotation_integration.rs"
+required-features = ["database"]
+
+# ---------------------------------------------------------------------------
 # Dev dependencies
 # ---------------------------------------------------------------------------
 [dev-dependencies]
