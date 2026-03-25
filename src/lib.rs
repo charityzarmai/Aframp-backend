@@ -27,6 +27,9 @@ pub mod middleware;
 #[cfg(feature = "database")]
 pub mod logging;
 
+#[cfg(feature = "database")]
+pub mod telemetry;
+
 // Cache layer
 #[cfg(feature = "cache")]
 pub mod cache;
@@ -34,6 +37,9 @@ pub mod cache;
 // Services
 #[cfg(feature = "database")]
 pub mod services;
+
+#[cfg(feature = "database")]
+pub mod recurring;
 
 // Payment providers
 #[cfg(feature = "database")]

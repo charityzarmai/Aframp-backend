@@ -9,6 +9,7 @@ pub mod onramp_quote_repository;
 pub mod payment_method_repository;
 pub mod payment_repository;
 pub mod provider_config_repository;
+pub mod recurring_payment_repository;
 pub mod repository;
 pub mod transaction;
 pub mod transaction_repository;
