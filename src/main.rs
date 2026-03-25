@@ -11,6 +11,7 @@ mod metrics;
 mod middleware;
 mod oauth;
 mod payments;
+mod recurring;
 mod services;
 mod workers;
 
@@ -24,7 +25,7 @@ use crate::payments::types::{
     CustomerContact, Money, PaymentMethod, PaymentRequest as ProviderPaymentRequest, ProviderName,
 };
 use axum::{
-    routing::{get, patch, post},
+    routing::{delete, get, patch, post},
     Json, Router,
 };
 use cache::{init_cache_pool, build_multi_level_cache, CacheConfig, RedisCache};
@@ -1044,6 +1045,59 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    // ── Recurring payment routes (Issue #122) ────────────────────────────────
+    let recurring_routes = if let Some(pool) = db_pool.clone() {
+        let failure_threshold = std::env::var("RECURRING_FAILURE_THRESHOLD")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3);
+        let recurring_state = std::sync::Arc::new(api::recurring::RecurringState {
+            repo: std::sync::Arc::new(
+                database::recurring_payment_repository::RecurringPaymentRepository::new(pool.clone()),
+            ),
+            default_failure_threshold: failure_threshold,
+        });
+        Router::new()
+            .route("/api/recurring", post(api::recurring::create_schedule))
+            .route("/api/recurring", get(api::recurring::list_schedules))
+            .route("/api/recurring/{id}", get(api::recurring::get_schedule))
+            .route("/api/recurring/{id}", patch(api::recurring::update_schedule))
+            .route("/api/recurring/{id}", delete(api::recurring::cancel_schedule))
+            .with_state(recurring_state)
+    } else {
+        info!("Skipping recurring routes (no database)");
+        Router::new()
+    };
+
+    // Start Recurring Payment Worker (Issue #122)
+    let recurring_worker_enabled = std::env::var("RECURRING_WORKER_ENABLED")
+        .unwrap_or_else(|_| "true".to_string())
+        .to_lowercase()
+        != "false";
+    if recurring_worker_enabled {
+        if let Some(pool) = db_pool.clone() {
+            let worker_config = workers::recurring_payment_worker::RecurringWorkerConfig::from_env();
+            info!(
+                poll_interval_secs = worker_config.poll_interval.as_secs(),
+                batch_size = worker_config.batch_size,
+                "Starting recurring payment worker"
+            );
+            let repo = std::sync::Arc::new(
+                database::recurring_payment_repository::RecurringPaymentRepository::new(pool),
+            );
+            let worker = workers::recurring_payment_worker::RecurringPaymentWorker::new(
+                repo,
+                worker_config,
+            );
+            tokio::spawn(worker.run(worker_shutdown_rx.clone()));
+            info!("✅ Recurring payment worker started");
+        } else {
+            info!("Skipping recurring payment worker (no database)");
+        }
+    } else {
+        info!("Recurring payment worker disabled (RECURRING_WORKER_ENABLED=false)");
+    }
+
     // ── Batch transaction routes (Issue #125) ────────────────────────────────
     let batch_routes = if let Some(pool) = db_pool.clone() {
         let batch_state = api::batch::BatchState::new(std::sync::Arc::new(pool));
@@ -1174,6 +1228,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(batch_routes)
         .merge(admin_routes)
         .merge(openapi_routes)
+        .merge(recurring_routes)
         .merge(oauth_routes)
         .merge(history_routes)
         .with_state(AppState {

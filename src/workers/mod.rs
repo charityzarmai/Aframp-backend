@@ -8,3 +8,6 @@ pub mod recurring_payment_worker;
 pub mod stellar_confirmation_worker;
 pub mod transaction_monitor;
 pub mod webhook_retry;
+pub mod bill_processor;
+pub mod batch_processor;
+pub mod recurring_payment_worker;

@@ -69,6 +69,10 @@ pub mod health;
 #[cfg(feature = "database")]
 pub mod workers;
 
+// Recurring payment frequency helpers
+#[cfg(feature = "database")]
+pub mod recurring;
+
 // Prometheus metrics
 #[cfg(feature = "database")]
 pub mod metrics;
