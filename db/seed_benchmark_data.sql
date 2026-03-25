@@ -54,6 +54,17 @@ SELECT
     (random() * 50000)::numeric(36,18),
     ((random() * 50000)::numeric(36,18))::text,
     now() - (random() * INTERVAL '1 hour'),
+-- ---------------------------------------------------------------------------
+INSERT INTO wallets (id, user_id, wallet_address, chain, has_afri_trustline,
+                     afri_balance, balance, created_at, updated_at)
+SELECT
+    gen_random_uuid(),
+    u.id,
+    'G' || upper(md5(u.id::text || 'wallet')),   -- deterministic fake Stellar address
+    'stellar',
+    true,
+    (random() * 10000)::numeric(36,18),
+    (random() * 10000)::text,
     u.created_at,
     u.created_at
 FROM users u
@@ -68,6 +79,13 @@ ON CONFLICT DO NOTHING;
 --                 processing (8%), payment_received (2%)
 --      providers: paystack (40%), flutterwave (35%), mpesa (25%)
 --      date range: last 365 days
+-- 3. Seed 1 000 000 transactions
+--    Distributed across:
+--      - types:     onramp (50%), offramp (35%), bill_payment (15%)
+--      - statuses:  completed (70%), failed (10%), pending (10%),
+--                   processing (8%), payment_received (2%)
+--      - providers: paystack (40%), flutterwave (35%), mpesa (25%)
+--      - date range: last 365 days
 -- ---------------------------------------------------------------------------
 DO $$
 DECLARE
@@ -93,6 +111,7 @@ BEGIN
             from_amount, to_amount, cngn_amount,
             status, payment_provider, payment_reference,
             blockchain_tx_hash, stellar_tx_hash, metadata,
+            blockchain_tx_hash, metadata,
             created_at, updated_at
         )
         SELECT
@@ -149,6 +168,7 @@ ON CONFLICT (from_currency, to_currency) DO NOTHING;
 
 -- ---------------------------------------------------------------------------
 -- 5. Update statistics so the planner uses the new data immediately
+-- 4. Update statistics so the planner uses the new data immediately
 -- ---------------------------------------------------------------------------
 ANALYZE transactions;
 ANALYZE wallets;
