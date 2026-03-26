@@ -13,6 +13,7 @@ pub struct AppConfig {
     pub stellar: StellarConfig,
     /// Distributed tracing configuration (Issue #104 — OpenTelemetry).
     pub telemetry: TelemetryConfig,
+    pub kyc: KycConfig,
 }
 
 /// Server configuration
@@ -186,6 +187,7 @@ impl AppConfig {
             logging: LoggingConfig::from_env()?,
             stellar: StellarConfig::from_env()?,
             telemetry: TelemetryConfig::from_env()?,
+            kyc: KycConfig::from_env()?,
         })
     }
 
@@ -196,6 +198,7 @@ impl AppConfig {
         self.cache.validate()?;
         self.stellar.validate()?;
         self.telemetry.validate()?;
+        self.kyc.validate()?;
 
         Ok(())
     }
@@ -422,6 +425,203 @@ impl From<std::num::ParseIntError> for ConfigError {
 impl From<std::num::ParseFloatError> for ConfigError {
     fn from(_: std::num::ParseFloatError) -> Self {
         ConfigError::InvalidValue("Failed to parse float value".to_string())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// KYC Configuration
+// ---------------------------------------------------------------------------
+
+/// KYC (Know Your Customer) verification configuration
+#[derive(Debug, Clone)]
+pub struct KycConfig {
+    pub default_provider: String,
+    pub providers: Vec<KycProviderConfig>,
+    pub session_timeout_hours: u64,
+    pub webhook_timeout_seconds: u64,
+    pub max_document_size_mb: usize,
+    pub compliance: KycComplianceConfig,
+    pub limits: KycLimitsConfig,
+}
+
+/// Individual KYC provider configuration
+#[derive(Debug, Clone)]
+pub struct KycProviderConfig {
+    pub name: String,
+    pub api_key: String,
+    pub api_secret: String,
+    pub webhook_secret: String,
+    pub base_url: String,
+    pub timeout_seconds: u64,
+    pub retry_attempts: u32,
+    pub enabled: bool,
+}
+
+/// KYC compliance and EDD configuration
+#[derive(Debug, Clone)]
+pub struct KycComplianceConfig {
+    pub manual_review_queue_threshold: i64,
+    pub webhook_failure_rate_threshold: f64,
+    pub auto_approve_enabled: bool,
+    pub enhanced_due_diligence_enabled: bool,
+    pub audit_retention_days: u64,
+    pub compliance_report_schedule_hours: u64,
+}
+
+/// KYC transaction limits configuration
+#[derive(Debug, Clone)]
+pub struct KycLimitsConfig {
+    pub daily_reset_hour: u8, // 0-23
+    pub monthly_reset_day: u8, // 1-28
+    pub volume_check_enabled: bool,
+    pub violation_alert_threshold: f64, // 0.0-1.0
+}
+
+impl KycConfig {
+    /// Load KYC configuration from environment variables
+    pub fn from_env() -> Result<Self, ConfigError> {
+        let default_provider = env::var("KYC_DEFAULT_PROVIDER")
+            .unwrap_or_else(|_| "smile_identity".to_string());
+
+        let session_timeout_hours = env::var("KYC_SESSION_TIMEOUT_HOURS")
+            .unwrap_or_else(|_| "24".to_string())
+            .parse()
+            .map_err(|_| ConfigError::InvalidValue("KYC_SESSION_TIMEOUT_HOURS".to_string()))?;
+
+        let webhook_timeout_seconds = env::var("KYC_WEBHOOK_TIMEOUT_SECONDS")
+            .unwrap_or_else(|_| "30".to_string())
+            .parse()
+            .map_err(|_| ConfigError::InvalidValue("KYC_WEBHOOK_TIMEOUT_SECONDS".to_string()))?;
+
+        let max_document_size_mb = env::var("KYC_MAX_DOCUMENT_SIZE_MB")
+            .unwrap_or_else(|_| "10".to_string())
+            .parse()
+            .map_err(|_| ConfigError::InvalidValue("KYC_MAX_DOCUMENT_SIZE_MB".to_string()))?;
+
+        // Load provider configurations
+        let providers = Self::load_providers()?;
+
+        let compliance = KycComplianceConfig {
+            manual_review_queue_threshold: env::var("KYC_MANUAL_REVIEW_QUEUE_THRESHOLD")
+                .unwrap_or_else(|_| "50".to_string())
+                .parse()
+                .map_err(|_| ConfigError::InvalidValue("KYC_MANUAL_REVIEW_QUEUE_THRESHOLD".to_string()))?,
+            webhook_failure_rate_threshold: env::var("KYC_WEBHOOK_FAILURE_RATE_THRESHOLD")
+                .unwrap_or_else(|_| "0.1".to_string())
+                .parse()
+                .map_err(|_| ConfigError::InvalidValue("KYC_WEBHOOK_FAILURE_RATE_THRESHOLD".to_string()))?,
+            auto_approve_enabled: env::var("KYC_AUTO_APPROVE_ENABLED")
+                .unwrap_or_else(|_| "false".to_string())
+                .parse()
+                .map_err(|_| ConfigError::InvalidValue("KYC_AUTO_APPROVE_ENABLED".to_string()))?,
+            enhanced_due_diligence_enabled: env::var("KYC_EDD_ENABLED")
+                .unwrap_or_else(|_| "true".to_string())
+                .parse()
+                .map_err(|_| ConfigError::InvalidValue("KYC_EDD_ENABLED".to_string()))?,
+            audit_retention_days: env::var("KYC_AUDIT_RETENTION_DAYS")
+                .unwrap_or_else(|_| "2555".to_string()) // 7 years
+                .parse()
+                .map_err(|_| ConfigError::InvalidValue("KYC_AUDIT_RETENTION_DAYS".to_string()))?,
+            compliance_report_schedule_hours: env::var("KYC_COMPLIANCE_REPORT_SCHEDULE_HOURS")
+                .unwrap_or_else(|_| "24".to_string())
+                .parse()
+                .map_err(|_| ConfigError::InvalidValue("KYC_COMPLIANCE_REPORT_SCHEDULE_HOURS".to_string()))?,
+        };
+
+        let limits = KycLimitsConfig {
+            daily_reset_hour: env::var("KYC_DAILY_RESET_HOUR")
+                .unwrap_or_else(|_| "0".to_string())
+                .parse()
+                .map_err(|_| ConfigError::InvalidValue("KYC_DAILY_RESET_HOUR".to_string()))?,
+            monthly_reset_day: env::var("KYC_MONTHLY_RESET_DAY")
+                .unwrap_or_else(|_| "1".to_string())
+                .parse()
+                .map_err(|_| ConfigError::InvalidValue("KYC_MONTHLY_RESET_DAY".to_string()))?,
+            volume_check_enabled: env::var("KYC_VOLUME_CHECK_ENABLED")
+                .unwrap_or_else(|_| "true".to_string())
+                .parse()
+                .map_err(|_| ConfigError::InvalidValue("KYC_VOLUME_CHECK_ENABLED".to_string()))?,
+            violation_alert_threshold: env::var("KYC_VIOLATION_ALERT_THRESHOLD")
+                .unwrap_or_else(|_| "0.8".to_string())
+                .parse()
+                .map_err(|_| ConfigError::InvalidValue("KYC_VIOLATION_ALERT_THRESHOLD".to_string()))?,
+        };
+
+        Ok(KycConfig {
+            default_provider,
+            providers,
+            session_timeout_hours,
+            webhook_timeout_seconds,
+            max_document_size_mb,
+            compliance,
+            limits,
+        })
+    }
+
+    fn load_providers() -> Result<Vec<KycProviderConfig>, ConfigError> {
+        let mut providers = Vec::new();
+
+        // Load Smile Identity configuration if available
+        if let (Ok(api_key), Ok(api_secret)) = (
+            env::var("SMILE_IDENTITY_API_KEY"),
+            env::var("SMILE_IDENTITY_API_SECRET"),
+        ) {
+            providers.push(KycProviderConfig {
+                name: "smile_identity".to_string(),
+                api_key,
+                api_secret,
+                webhook_secret: env::var("SMILE_IDENTITY_WEBHOOK_SECRET").unwrap_or_default(),
+                base_url: env::var("SMILE_IDENTITY_BASE_URL")
+                    .unwrap_or_else(|_| "https://api.smileidentity.com".to_string()),
+                timeout_seconds: env::var("SMILE_IDENTITY_TIMEOUT_SECONDS")
+                    .unwrap_or_else(|_| "30".to_string())
+                    .parse()
+                    .map_err(|_| ConfigError::InvalidValue("SMILE_IDENTITY_TIMEOUT_SECONDS".to_string()))?,
+                retry_attempts: env::var("SMILE_IDENTITY_RETRY_ATTEMPTS")
+                    .unwrap_or_else(|_| "3".to_string())
+                    .parse()
+                    .map_err(|_| ConfigError::InvalidValue("SMILE_IDENTITY_RETRY_ATTEMPTS".to_string()))?,
+                enabled: env::var("SMILE_IDENTITY_ENABLED")
+                    .unwrap_or_else(|_| "true".to_string())
+                    .parse()
+                    .map_err(|_| ConfigError::InvalidValue("SMILE_IDENTITY_ENABLED".to_string()))?,
+            });
+        }
+
+        Ok(providers)
+    }
+
+    /// Validate KYC configuration
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.providers.is_empty() {
+            return Err(ConfigError::Validation("No KYC providers configured".to_string()));
+        }
+
+        // Check if default provider exists and is enabled
+        if !self.providers.iter().any(|p| p.name == self.default_provider && p.enabled) {
+            return Err(ConfigError::Validation(format!(
+                "Default provider '{}' not found or not enabled",
+                self.default_provider
+            )));
+        }
+
+        if self.session_timeout_hours == 0 {
+            return Err(ConfigError::Validation("Session timeout must be greater than 0".to_string()));
+        }
+
+        if self.max_document_size_mb == 0 {
+            return Err(ConfigError::Validation("Max document size must be greater than 0".to_string()));
+        }
+
+        if self.limits.daily_reset_hour > 23 {
+            return Err(ConfigError::Validation("Daily reset hour must be 0-23".to_string()));
+        }
+
+        if self.limits.monthly_reset_day == 0 || self.limits.monthly_reset_day > 28 {
+            return Err(ConfigError::Validation("Monthly reset day must be 1-28".to_string()));
+        }
+
+        Ok(())
     }
 }
 

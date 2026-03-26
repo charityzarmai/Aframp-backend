@@ -45,6 +45,10 @@ pub mod recurring;
 #[cfg(feature = "database")]
 pub mod payments;
 
+// KYC (Know Your Customer) verification system
+#[cfg(feature = "database")]
+pub mod kyc;
+
 // Configuration module
 #[cfg(feature = "database")]
 pub mod config;
