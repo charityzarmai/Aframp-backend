@@ -119,6 +119,10 @@ pub mod masking;
 #[cfg(feature = "database")]
 pub mod gateway;
 
+// Consumer usage analytics & reporting system
+#[cfg(feature = "database")]
+pub mod analytics;
+
 // Contract error enum for Soroban (only when not using database feature)
 #[cfg(not(feature = "database"))]
 #[contracterror]

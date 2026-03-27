@@ -959,6 +959,7 @@ fn register_all(r: &Registry) {
     crate::pentest::metrics::register(r);
     crate::masking::metrics::register(r);
     crate::gateway::metrics::register(r);
+    crate::analytics::metrics::register(r);
     #[cfg(feature = "database")]
 }
 
