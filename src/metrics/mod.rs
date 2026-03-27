@@ -743,6 +743,7 @@ fn register_all(r: &Registry) {
     ip_detection::register(r);
     crate::ddos::metrics::register(r);
     crate::crypto::metrics::register(r);
+    crate::key_management::metrics::register(r);
 }
 
 // ---------------------------------------------------------------------------

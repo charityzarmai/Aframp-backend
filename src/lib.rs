@@ -94,6 +94,10 @@ pub mod ddos;
 #[cfg(feature = "database")]
 pub mod crypto;
 
+// Platform key management framework (Issue — Key Management & Rotation)
+#[cfg(feature = "database")]
+pub mod key_management;
+
 // Contract error enum for Soroban (only when not using database feature)
 #[cfg(not(feature = "database"))]
 #[contracterror]
