@@ -95,6 +95,10 @@ pub mod metrics;
 #[cfg(feature = "cache")]
 pub mod ddos;
 
+// Microservice-to-microservice authentication
+#[cfg(feature = "database")]
+pub mod service_auth;
+
 // End-to-end payload encryption (Issue — Data Security & Encryption)
 #[cfg(feature = "database")]
 pub mod crypto;
@@ -115,6 +119,13 @@ pub mod masking;
 #[cfg(feature = "database")]
 pub mod gateway;
 
+// mTLS certificate lifecycle management
+#[cfg(feature = "database")]
+pub mod mtls;
+
+// Comprehensive audit logging system
+#[cfg(feature = "database")]
+pub mod audit;
 // Microservice-to-microservice authentication
 #[cfg(feature = "database")]
 pub mod service_auth;
