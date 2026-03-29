@@ -111,6 +111,10 @@ pub mod key_management;
 #[cfg(feature = "database")]
 pub mod pentest;
 
+// Bug bounty programme & responsible disclosure
+#[cfg(feature = "database")]
+pub mod bug_bounty;
+
 // Data masking & redaction system
 #[cfg(feature = "database")]
 pub mod masking;

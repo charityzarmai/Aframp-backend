@@ -19,6 +19,7 @@ mod middleware;
 mod mtls;
 mod oauth;
 mod payments;
+mod bug_bounty;
 mod pentest;
 mod recurring;
 mod security_compliance;
@@ -1599,6 +1600,36 @@ async fn main() -> anyhow::Result<()> {
         Router::new()
     };
 
+    // ── Bug Bounty Programme ──────────────────────────────────────────────────
+    let bug_bounty_routes = if let Some(pool) = db_pool.clone() {
+        let repo = std::sync::Arc::new(bug_bounty::BugBountyRepository::new(pool));
+        let config = bug_bounty::BugBountyConfig::default();
+        let registry = prometheus::default_registry();
+        let metrics = std::sync::Arc::new(
+            bug_bounty::metrics::BugBountyMetrics::new(registry).unwrap_or_else(|e| {
+                tracing::warn!("Bug bounty metrics registration failed ({}); using fallback", e);
+                bug_bounty::metrics::BugBountyMetrics::new(&prometheus::Registry::new())
+                    .expect("fallback registry must succeed")
+            }),
+        );
+        let notification_dispatcher = std::sync::Arc::new(
+            bug_bounty::notifications::NotificationDispatcher::new(repo.clone()),
+        );
+        let svc = std::sync::Arc::new(bug_bounty::BugBountyService::new(
+            repo,
+            notification_dispatcher,
+            config.clone(),
+            metrics,
+        ));
+        // Spawn SLA polling worker
+        bug_bounty::SlaPollingWorker::spawn(svc.clone(), &config);
+        info!("🐛 Bug bounty programme routes enabled");
+        bug_bounty::bug_bounty_routes(svc)
+    } else {
+        info!("⏭️  Skipping bug bounty routes (no database)");
+        Router::new()
+    };
+
     // Setup OAuth 2.0 routes
     let oauth_routes = if let (Some(pool), Some(cache)) = (db_pool.clone(), redis_cache.clone()) {
         match oauth::RsaKeyPair::from_env() {
@@ -1731,6 +1762,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(history_routes)
         .merge(ddos_admin_routes)
         .merge(pentest_routes)
+        .merge(bug_bounty_routes)
         .merge(developer_portal::routes::register_developer_portal_routes(Router::new(), db_pool.clone()))
         .merge(Router::new().nest("/api/admin/security", mtls_admin_routes))
         .merge(security_compliance_routes)

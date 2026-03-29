@@ -962,6 +962,7 @@ fn register_all(r: &Registry) {
     crate::analytics::metrics::register(r);
     crate::adaptive_rate_limit::metrics::register(r);
     crate::security_compliance::metrics::register(r);
+    crate::bug_bounty::metrics::register(r);
 }
 
 // ---------------------------------------------------------------------------
