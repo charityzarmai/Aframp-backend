@@ -115,6 +115,10 @@ pub mod pentest;
 #[cfg(feature = "database")]
 pub mod bug_bounty;
 
+// Mint & Burn event monitoring worker
+#[cfg(feature = "database")]
+pub mod mint_burn;
+
 // Data masking & redaction system
 #[cfg(feature = "database")]
 pub mod masking;

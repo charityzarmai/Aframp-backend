@@ -20,6 +20,7 @@ mod mtls;
 mod oauth;
 mod payments;
 mod bug_bounty;
+mod mint_burn;
 mod pentest;
 mod recurring;
 mod security_compliance;
@@ -1630,6 +1631,61 @@ async fn main() -> anyhow::Result<()> {
         Router::new()
     };
 
+    // ── Mint & Burn Event Monitoring Worker ───────────────────────────────────
+    let mint_burn_enabled = std::env::var("MINT_BURN_WORKER_ENABLED")
+        .unwrap_or_else(|_| "true".to_string())
+        .to_lowercase()
+        != "false";
+    let mut mint_burn_handle: Option<tokio::task::JoinHandle<()>> = None;
+    let mut mint_burn_shutdown_tx: Option<tokio::sync::watch::Sender<bool>> = None;
+    if mint_burn_enabled {
+        if let Some(pool) = db_pool.clone() {
+            let mb_config = mint_burn::MintBurnConfig {
+                issuer_id: std::env::var("MINT_BURN_ISSUER_ID")
+                    .unwrap_or_else(|_| std::env::var("CNGN_ISSUER_ADDRESS").unwrap_or_default()),
+                horizon_base_url: std::env::var("MINT_BURN_HORIZON_BASE_URL")
+                    .unwrap_or_else(|_| "https://horizon-testnet.stellar.org".to_string()),
+                heartbeat_timeout_secs: std::env::var("MINT_BURN_HEARTBEAT_TIMEOUT_SECS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(30),
+                reconnect_backoff_max_secs: std::env::var("MINT_BURN_RECONNECT_BACKOFF_MAX_SECS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(60),
+                reconnect_backoff_initial_secs: std::env::var("MINT_BURN_RECONNECT_BACKOFF_INITIAL_SECS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(1),
+            };
+            let registry = prometheus::default_registry();
+            match mint_burn::metrics::MintBurnMetrics::new(registry) {
+                Ok(mb_metrics) => {
+                    info!(
+                        issuer_id = %mb_config.issuer_id,
+                        horizon_base_url = %mb_config.horizon_base_url,
+                        "Starting Mint & Burn event monitoring worker"
+                    );
+                    let (worker, shutdown_tx) = mint_burn::worker::MintBurnWorker::new(
+                        mb_config,
+                        pool,
+                        std::sync::Arc::new(mb_metrics),
+                    );
+                    mint_burn_handle = Some(worker.spawn());
+                    mint_burn_shutdown_tx = Some(shutdown_tx);
+                    info!("✅ Mint & Burn event monitoring worker started");
+                }
+                Err(e) => {
+                    error!(error = %e, "Failed to register Prometheus metrics for Mint & Burn worker — skipping");
+                }
+            }
+        } else {
+            info!("Skipping Mint & Burn worker (no database)");
+        }
+    } else {
+        info!("Mint & Burn worker disabled (MINT_BURN_WORKER_ENABLED=false)");
+    }
+
     // Setup OAuth 2.0 routes
     let oauth_routes = if let (Some(pool), Some(cache)) = (db_pool.clone(), redis_cache.clone()) {
         match oauth::RsaKeyPair::from_env() {
@@ -2036,10 +2092,17 @@ async fn main() -> anyhow::Result<()> {
             error!(error = %e, "Timed out waiting for offramp worker shutdown");
         }
     }
+    // Signal and await the Mint & Burn worker with a 5-second drain timeout (Req 9.2)
+    if let Some(tx) = mint_burn_shutdown_tx {
+        let _ = tx.send(true);
+    }
+    if let Some(handle) = mint_burn_handle {
+        if let Err(e) = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await {
+            error!(error = %e, "Timed out waiting for Mint & Burn worker shutdown");
+        }
+    }
 
     info!("👋 Server shutdown complete");
-
-    // -------------------------------------------------------------------------
     // Flush all buffered spans to the OTLP exporter before the process exits.
     // Must be the very last call so no spans are lost during shutdown.   (Issue #104)
     // -------------------------------------------------------------------------
