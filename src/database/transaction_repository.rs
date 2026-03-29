@@ -238,6 +238,23 @@ impl TransactionRepository {
         .map_err(DatabaseError::from_sqlx)
     }
 
+    /// Find status by transaction_id
+    pub async fn find_status_by_id(&self, transaction_id: &str) -> Result<String, DatabaseError> {
+        let uuid = Uuid::parse_str(transaction_id).map_err(|e| {
+            DatabaseError::new(DatabaseErrorKind::Unknown {
+                message: format!("Invalid UUID: {}", e),
+            })
+        })?;
+
+        sqlx::query_scalar::<_, String>(
+            "SELECT status FROM transactions WHERE transaction_id = $1"
+        )
+        .bind(uuid)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(DatabaseError::from_sqlx)
+    }
+
     /// Find pending payments for monitoring
     ///
     /// Returns up to `limit` transactions that are in 'pending' or 'processing' status
@@ -255,7 +272,7 @@ impl TransactionRepository {
                     priority_level, partner_tier,
                     created_at, updated_at
              FROM transactions
-             WHERE status IN ('pending', 'processing', 'pending_payment')
+             WHERE status IN ('pending', 'processing', 'pending_payment', 'burning', 'refunding')
                AND created_at > NOW() - INTERVAL '1 hour' * $1
              ORDER BY created_at ASC
              LIMIT $2",

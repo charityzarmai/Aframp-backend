@@ -727,6 +727,8 @@ impl OnrampProcessor {
             transaction_id: tx.transaction_id,
             priority: tx.priority_level,
             partner_tier: tx.partner_tier.clone(),
+            mint_type: crate::services::mint_queue::MintType::Standard,
+            linked_burn_hash: None,
         };
 
         if let Err(e) = self.queue.enqueue(mint_req).await {

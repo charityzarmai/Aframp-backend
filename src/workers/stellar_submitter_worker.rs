@@ -142,9 +142,15 @@ impl StellarSubmitterWorker {
                                 
                                 // Update status for all transactions in batch
                                 for req in &valid_requests {
+                                    let next_status = match req.mint_type {
+                                        crate::services::mint_queue::MintType::Refund => "refunding",
+                                        _ => "processing",
+                                    };
+
                                     let _ = sqlx::query(
-                                        "UPDATE transactions SET status = 'processing', blockchain_tx_hash = $1, updated_at = NOW() WHERE transaction_id = $2"
+                                        "UPDATE transactions SET status = $1, blockchain_tx_hash = $2, updated_at = NOW() WHERE transaction_id = $3"
                                     )
+                                    .bind(next_status)
                                     .bind(hash)
                                     .bind(req.transaction_id)
                                     .execute((*self.db).as_ref())

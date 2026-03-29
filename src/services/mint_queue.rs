@@ -4,11 +4,21 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use tracing::{debug, error, info};
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MintType {
+    Standard,
+    Refund,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MintRequest {
     pub transaction_id: Uuid,
     pub priority: i32,
     pub partner_tier: String,
+    pub mint_type: MintType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub linked_burn_hash: Option<String>,
 }
 
 #[derive(Clone)]
