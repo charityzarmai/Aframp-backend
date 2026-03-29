@@ -4,7 +4,16 @@
 // Import soroban SDK items only when not using database feature
 #[cfg(not(feature = "database"))]
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, token, Address, Env, String, Symbol, Vec,
+    contract,
+    contracterror,
+    contractimpl,
+    contracttype,
+    token,
+    Address,
+    Env,
+    String,
+    Symbol,
+    Vec,
 };
 
 // Database module requires std and specific dependencies
@@ -140,6 +149,10 @@ pub mod service_auth;
 #[cfg(feature = "database")]
 pub mod abuse_detection;
 
+// Security module - anomaly detection and circuit breaker
+#[cfg(feature = "database")]
+pub mod security;
+
 // Audit logging system
 #[cfg(feature = "database")]
 pub mod audit;
@@ -219,7 +232,7 @@ impl EscrowContract {
         admin: Address,
         fee_rate: u32,
         fee_treasury: Address,
-        dispute_resolver: Address,
+        dispute_resolver: Address
     ) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
@@ -230,12 +243,8 @@ impl EscrowContract {
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::FeeRate, &fee_rate);
-        env.storage()
-            .instance()
-            .set(&DataKey::FeeTreasury, &fee_treasury);
-        env.storage()
-            .instance()
-            .set(&DataKey::DisputeResolver, &dispute_resolver);
+        env.storage().instance().set(&DataKey::FeeTreasury, &fee_treasury);
+        env.storage().instance().set(&DataKey::DisputeResolver, &dispute_resolver);
         env.storage().instance().set(&DataKey::IsPaused, &false);
         env.storage().instance().set(&DataKey::OrderCount, &0u64);
         Ok(())
@@ -264,9 +273,7 @@ impl EscrowContract {
         if new_fee_rate > 1000 {
             return Err(Error::InvalidFeeRate);
         }
-        env.storage()
-            .instance()
-            .set(&DataKey::FeeRate, &new_fee_rate);
+        env.storage().instance().set(&DataKey::FeeRate, &new_fee_rate);
         Ok(())
     }
 
@@ -278,9 +285,7 @@ impl EscrowContract {
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)?;
         admin.require_auth();
-        env.storage()
-            .instance()
-            .set(&DataKey::FeeTreasury, &new_treasury);
+        env.storage().instance().set(&DataKey::FeeTreasury, &new_treasury);
         Ok(())
     }
 
@@ -292,9 +297,7 @@ impl EscrowContract {
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)?;
         admin.require_auth();
-        env.storage()
-            .instance()
-            .set(&DataKey::DisputeResolver, &new_resolver);
+        env.storage().instance().set(&DataKey::DisputeResolver, &new_resolver);
         Ok(())
     }
 
@@ -324,29 +327,19 @@ impl EscrowContract {
 
     /// Check if the contract is paused
     pub fn is_paused(env: Env) -> bool {
-        env.storage()
-            .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false)
+        env.storage().instance().get(&DataKey::IsPaused).unwrap_or(false)
     }
 
     /// Get the current admin address
     pub fn get_admin(env: Env) -> Result<Address, Error> {
-        env.storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)
+        env.storage().instance().get(&DataKey::Admin).ok_or(Error::NotInitialized)
     }
 
     /// Accept an open sell order and lock funds in escrow
     pub fn accept_order(env: Env, order_id: u64, buyer: Address) -> Result<(), Error> {
         buyer.require_auth();
 
-        let is_paused: bool = env
-            .storage()
-            .instance()
-            .get(&DataKey::IsPaused)
-            .unwrap_or(false);
+        let is_paused: bool = env.storage().instance().get(&DataKey::IsPaused).unwrap_or(false);
         if is_paused {
             return Err(Error::ContractPaused);
         }
@@ -364,15 +357,13 @@ impl EscrowContract {
         order.buyer = Some(buyer.clone());
         order.status = OrderStatus::Locked;
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Order(order_id), &order);
+        env.storage().persistent().set(&DataKey::Order(order_id), &order);
 
         Self::update_user_orders(&env, &buyer, order_id);
 
         env.events().publish(
             (Symbol::new(&env, "order_accepted"),),
-            (order_id, buyer.clone(), order.amount),
+            (order_id, buyer.clone(), order.amount)
         );
 
         Ok(())
@@ -400,11 +391,7 @@ impl EscrowContract {
     fn lock_escrow_funds(env: &Env, order: &Order) -> Result<(), Error> {
         let token_client = token::Client::new(env, &order.token);
 
-        token_client.transfer(
-            &order.seller,
-            &env.current_contract_address(),
-            &order.amount,
-        );
+        token_client.transfer(&order.seller, &env.current_contract_address(), &order.amount);
 
         Ok(())
     }
@@ -419,17 +406,15 @@ impl EscrowContract {
 
         user_orders.push_back(order_id);
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::UserOrders(user.clone()), &user_orders);
+        env.storage().persistent().set(&DataKey::UserOrders(user.clone()), &user_orders);
     }
 }
 
 #[cfg(all(test, not(feature = "database")))]
 mod tests {
     use super::*;
-    use soroban_sdk::testutils::{Address as _, Ledger};
-    use soroban_sdk::{Address, Env};
+    use soroban_sdk::testutils::{ Address as _, Ledger };
+    use soroban_sdk::{ Address, Env };
 
     fn create_env() -> Env {
         Env::default()
@@ -455,7 +440,7 @@ mod tests {
         token: &Address,
         order_id: u64,
         status: OrderStatus,
-        expires_at: u64,
+        expires_at: u64
     ) -> Order {
         Order {
             id: order_id,
@@ -485,7 +470,7 @@ mod tests {
                 admin.clone(),
                 50,
                 treasury.clone(),
-                resolver.clone(),
+                resolver.clone()
             )
         });
         assert!(result.is_ok());
@@ -511,9 +496,8 @@ mod tests {
                 admin.clone(),
                 50,
                 treasury.clone(),
-                resolver.clone(),
-            )
-            .unwrap();
+                resolver.clone()
+            ).unwrap();
         });
         let result = env.as_contract(&contract_id, || {
             EscrowContract::initialize(
@@ -521,7 +505,7 @@ mod tests {
                 admin.clone(),
                 50,
                 treasury.clone(),
-                resolver.clone(),
+                resolver.clone()
             )
         });
         assert_eq!(result, Err(Error::AlreadyInitialized));
@@ -539,9 +523,8 @@ mod tests {
                 admin.clone(),
                 50,
                 treasury.clone(),
-                resolver.clone(),
-            )
-            .unwrap();
+                resolver.clone()
+            ).unwrap();
         });
 
         env.mock_all_auths();
@@ -564,9 +547,8 @@ mod tests {
                 admin.clone(),
                 50,
                 treasury.clone(),
-                resolver.clone(),
-            )
-            .unwrap();
+                resolver.clone()
+            ).unwrap();
         });
 
         env.as_contract(&contract_id, || {
@@ -586,9 +568,8 @@ mod tests {
                 admin.clone(),
                 50,
                 treasury.clone(),
-                resolver.clone(),
-            )
-            .unwrap();
+                resolver.clone()
+            ).unwrap();
         });
 
         env.mock_all_auths();
@@ -610,9 +591,8 @@ mod tests {
                 admin.clone(),
                 50,
                 treasury.clone(),
-                resolver.clone(),
-            )
-            .unwrap();
+                resolver.clone()
+            ).unwrap();
         });
 
         env.mock_all_auths();
@@ -638,9 +618,8 @@ mod tests {
                 admin.clone(),
                 50,
                 treasury.clone(),
-                resolver.clone(),
-            )
-            .unwrap();
+                resolver.clone()
+            ).unwrap();
         });
 
         env.mock_all_auths();
@@ -669,9 +648,8 @@ mod tests {
                 admin.clone(),
                 50,
                 treasury.clone(),
-                resolver.clone(),
-            )
-            .unwrap();
+                resolver.clone()
+            ).unwrap();
         });
 
         let paused = env.as_contract(&contract_id, || EscrowContract::is_paused(env.clone()));
@@ -690,9 +668,8 @@ mod tests {
                 admin.clone(),
                 50,
                 treasury.clone(),
-                resolver.clone(),
-            )
-            .unwrap();
+                resolver.clone()
+            ).unwrap();
         });
 
         let result = env.as_contract(&contract_id, || EscrowContract::get_admin(env.clone()));
@@ -712,9 +689,8 @@ mod tests {
                 admin.clone(),
                 50,
                 treasury.clone(),
-                resolver.clone(),
-            )
-            .unwrap();
+                resolver.clone()
+            ).unwrap();
         });
 
         env.mock_all_auths();
@@ -738,9 +714,8 @@ mod tests {
                 admin.clone(),
                 50,
                 treasury.clone(),
-                resolver.clone(),
-            )
-            .unwrap();
+                resolver.clone()
+            ).unwrap();
         });
 
         env.mock_all_auths();
@@ -766,9 +741,8 @@ mod tests {
                 admin.clone(),
                 50,
                 treasury.clone(),
-                resolver.clone(),
-            )
-            .unwrap();
+                resolver.clone()
+            ).unwrap();
         });
 
         let seller = Address::generate(&env);
@@ -783,13 +757,11 @@ mod tests {
             &token,
             order_id,
             OrderStatus::Locked,
-            env.ledger().timestamp() + 3600,
+            env.ledger().timestamp() + 3600
         );
 
         env.as_contract(&contract_id, || {
-            env.storage()
-                .persistent()
-                .set(&DataKey::Order(order_id), &order);
+            env.storage().persistent().set(&DataKey::Order(order_id), &order);
         });
 
         env.mock_all_auths();
@@ -812,9 +784,8 @@ mod tests {
                 admin.clone(),
                 50,
                 treasury.clone(),
-                resolver.clone(),
-            )
-            .unwrap();
+                resolver.clone()
+            ).unwrap();
         });
 
         let seller = Address::generate(&env);
@@ -829,13 +800,11 @@ mod tests {
             &token,
             order_id,
             OrderStatus::Completed,
-            env.ledger().timestamp() + 3600,
+            env.ledger().timestamp() + 3600
         );
 
         env.as_contract(&contract_id, || {
-            env.storage()
-                .persistent()
-                .set(&DataKey::Order(order_id), &order);
+            env.storage().persistent().set(&DataKey::Order(order_id), &order);
         });
 
         env.mock_all_auths();
@@ -858,9 +827,8 @@ mod tests {
                 admin.clone(),
                 50,
                 treasury.clone(),
-                resolver.clone(),
-            )
-            .unwrap();
+                resolver.clone()
+            ).unwrap();
         });
 
         let seller = Address::generate(&env);
@@ -880,13 +848,11 @@ mod tests {
             &token,
             order_id,
             OrderStatus::Open,
-            expired_time,
+            expired_time
         );
 
         env.as_contract(&contract_id, || {
-            env.storage()
-                .persistent()
-                .set(&DataKey::Order(order_id), &order);
+            env.storage().persistent().set(&DataKey::Order(order_id), &order);
         });
 
         env.mock_all_auths();
@@ -909,9 +875,8 @@ mod tests {
                 admin.clone(),
                 50,
                 treasury.clone(),
-                resolver.clone(),
-            )
-            .unwrap();
+                resolver.clone()
+            ).unwrap();
         });
 
         let seller = Address::generate(&env);
@@ -925,13 +890,11 @@ mod tests {
             &token,
             order_id,
             OrderStatus::Open,
-            env.ledger().timestamp() + 3600,
+            env.ledger().timestamp() + 3600
         );
 
         env.as_contract(&contract_id, || {
-            env.storage()
-                .persistent()
-                .set(&DataKey::Order(order_id), &order);
+            env.storage().persistent().set(&DataKey::Order(order_id), &order);
         });
 
         env.mock_all_auths();
@@ -955,9 +918,8 @@ mod tests {
                 admin.clone(),
                 50,
                 treasury.clone(),
-                resolver.clone(),
-            )
-            .unwrap();
+                resolver.clone()
+            ).unwrap();
         });
 
         let seller = Address::generate(&env);
@@ -972,13 +934,11 @@ mod tests {
             &token,
             order_id,
             OrderStatus::Disputed,
-            env.ledger().timestamp() + 3600,
+            env.ledger().timestamp() + 3600
         );
 
         env.as_contract(&contract_id, || {
-            env.storage()
-                .persistent()
-                .set(&DataKey::Order(order_id), &order);
+            env.storage().persistent().set(&DataKey::Order(order_id), &order);
         });
 
         env.mock_all_auths();
@@ -1001,9 +961,8 @@ mod tests {
                 admin.clone(),
                 50,
                 treasury.clone(),
-                resolver.clone(),
-            )
-            .unwrap();
+                resolver.clone()
+            ).unwrap();
         });
 
         let seller = Address::generate(&env);
@@ -1018,13 +977,11 @@ mod tests {
             &token,
             order_id,
             OrderStatus::Cancelled,
-            env.ledger().timestamp() + 3600,
+            env.ledger().timestamp() + 3600
         );
 
         env.as_contract(&contract_id, || {
-            env.storage()
-                .persistent()
-                .set(&DataKey::Order(order_id), &order);
+            env.storage().persistent().set(&DataKey::Order(order_id), &order);
         });
 
         env.mock_all_auths();
