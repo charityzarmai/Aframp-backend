@@ -545,6 +545,8 @@ async fn main() -> anyhow::Result<()> {
         }
     } else {
         info!("Stellar confirmation worker disabled (STELLAR_CONFIRM_WORKER_ENABLED=false)");
+    }
+
     // Start Onramp Processor Worker
     let onramp_enabled = std::env::var("ONRAMP_PROCESSOR_ENABLED")
         .unwrap_or_else(|_| "true".to_string())
@@ -552,8 +554,8 @@ async fn main() -> anyhow::Result<()> {
         != "false";
     let mut onramp_handle = None;
     if onramp_enabled {
-        if let (Some(pool), Some(client), Some(factory)) =
-            (db_pool.clone(), stellar_client.clone(), provider_factory.clone())
+        if let (Some(pool), Some(client), Some(factory), Some(redis)) =
+            (db_pool.clone(), stellar_client.clone(), provider_factory.clone(), redis_cache.clone())
         {
             let config = workers::onramp_processor::OnrampProcessorConfig::from_env();
             if config.system_wallet_address.is_empty() || config.system_wallet_secret.is_empty() {
@@ -565,10 +567,15 @@ async fn main() -> anyhow::Result<()> {
                     stellar_max_retries = config.stellar_max_retries,
                     "Starting onramp processor worker"
                 );
+
+                let mint_queue = services::mint_queue::MintQueueService::new(redis.pool.clone());
+                let mint_queue = Arc::new(mint_queue);
+
                 let processor = workers::onramp_processor::OnrampProcessor::new(
-                    pool,
-                    client,
-                    std::sync::Arc::new(factory),
+                    pool.clone(),
+                    client.clone(),
+                    (*mint_queue).clone(),
+                    factory.clone(),
                     config,
                 );
                 onramp_handle = Some(tokio::spawn(async move {
@@ -577,12 +584,31 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }));
                 info!("✅ Onramp processor worker started");
+
+                // Start Stellar Submitter Worker
+                let submitter_config = workers::stellar_submitter_worker::SubmitterConfig {
+                    system_wallet_address: std::env::var("SYSTEM_WALLET_ADDRESS").unwrap_or_default(),
+                    system_wallet_secret: std::env::var("SYSTEM_WALLET_SECRET").unwrap_or_default(),
+                    ..Default::default()
+                };
+                let submitter = workers::stellar_submitter_worker::StellarSubmitterWorker::new(
+                    pool,
+                    client,
+                    (*mint_queue).clone(),
+                    submitter_config,
+                );
+                tokio::spawn(async move {
+                    submitter.run(worker_shutdown_rx.clone()).await;
+                });
+                info!("✅ Stellar submitter worker started");
             }
         } else {
-            info!("Skipping onramp processor worker (missing db pool, stellar client, or provider factory)");
+            info!("Skipping onramp processor worker (missing db pool, stellar client, provider factory, or redis)");
         }
     } else {
         info!("Onramp processor worker disabled (ONRAMP_PROCESSOR_ENABLED=false)");
+    }
+
     // Start Bill Processor Worker
     let bill_processor_enabled = std::env::var("BILL_PROCESSOR_ENABLED")
         .unwrap_or_else(|_| "true".to_string())
@@ -663,6 +689,58 @@ async fn main() -> anyhow::Result<()> {
         }
     } else {
         info!("Payment poller worker disabled (PAYMENT_POLLER_ENABLED=false)");
+    }
+
+    // Start Supply Monitor Worker
+    let supply_monitor_enabled = std::env::var("SUPPLY_MONITOR_ENABLED")
+        .unwrap_or_else(|_| "true".to_string())
+        .to_lowercase() != "false";
+    if supply_monitor_enabled {
+        if let (Some(pool), Some(client)) = (db_pool.clone(), stellar_client.clone()) {
+            let asset_issuer = std::env::var("CNGN_ISSUER_ADDRESS")
+                .or_else(|_| std::env::var("CNGN_ISSUER_MAINNET"))
+                .unwrap_or_default();
+            
+            if asset_issuer.is_empty() {
+                warn!("CNGN_ISSUER_ADDRESS not set — skipping supply monitor worker");
+            } else {
+                let worker = workers::supply_monitor_worker::SupplyMonitorWorker::new(
+                    pool,
+                    client,
+                    notification_service.clone(),
+                    asset_issuer,
+                );
+                tokio::spawn(worker.run(worker_shutdown_rx.clone()));
+                info!("✅ cNGN supply monitor worker started");
+            }
+        }
+    }
+
+    // Start Reconciliation Worker
+    let reconciliation_enabled = std::env::var("RECONCILIATION_ENABLED")
+        .unwrap_or_else(|_| "true".to_string())
+        .to_lowercase() != "false";
+    if reconciliation_enabled {
+        if let (Some(pool), Some(client), Some(factory)) = (db_pool.clone(), stellar_client.clone(), provider_factory.clone()) {
+            let asset_issuer = std::env::var("CNGN_ISSUER_ADDRESS")
+                .or_else(|_| std::env::var("CNGN_ISSUER_MAINNET"))
+                .unwrap_or_default();
+            
+            if asset_issuer.is_empty() {
+                warn!("CNGN_ISSUER_ADDRESS not set — skipping reconciliation worker");
+            } else {
+                let service = services::reconciliation::ReconciliationService::new(
+                    pool,
+                    client,
+                    factory,
+                    notification_service.clone(),
+                    asset_issuer,
+                );
+                let worker = workers::reconciliation_worker::ReconciliationWorker::new(service);
+                tokio::spawn(worker.run(worker_shutdown_rx.clone()));
+                info!("✅ Supply-Reserve Reconciliation worker started");
+            }
+        }
     }
 
     // Initialize webhook processor and retry worker
@@ -1706,6 +1784,19 @@ async fn main() -> anyhow::Result<()> {
         .merge(adaptive_rl_admin_routes)
         .merge(openapi_routes)
         .merge(recurring_routes)
+    // ── Transparency Portal (Issue #239) ─────────────────────────────────────
+    let transparency_routes = if let Some(pool) = db_pool.clone() {
+        let signing_key = api::transparency::load_signing_key();
+        let state = std::sync::Arc::new(api::transparency::TransparencyState {
+            db: pool,
+            signing_key,
+        });
+        info!("🔍 Transparency portal routes enabled");
+        api::transparency::transparency_routes(state)
+    } else {
+        info!("⏭️  Skipping transparency routes (no database)");
+        Router::new()
+    };
     let app = Router::new()
         .route("/", get(root))
         .route("/health", get(health))
@@ -1765,6 +1856,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(bug_bounty_routes)
         .merge(developer_portal::routes::register_developer_portal_routes(Router::new(), db_pool.clone()))
         .merge(Router::new().nest("/api/admin/security", mtls_admin_routes))
+        .merge(transparency_routes)
         .merge(security_compliance_routes)
         .with_state(AppState {
             db_pool,
