@@ -14,6 +14,7 @@ use crate::chains::stellar::client::StellarClient;
 use crate::database::repository::Repository;
 use crate::database::transaction_repository::{Transaction, TransactionRepository};
 use crate::database::webhook_repository::WebhookRepository;
+use crate::services::notification::{NotificationEvent, NotificationService};
 use crate::error::{AppError, AppErrorKind, DomainError, ExternalError};
 use crate::payments::types::ProviderName;
 use crate::services::payment_orchestrator::PaymentOrchestrator;
@@ -162,20 +163,23 @@ pub struct OnrampProcessor {
     db: Arc<PgPool>,
     stellar: Arc<StellarClient>,
     payment_orchestrator: Arc<PaymentOrchestrator>,
+    notifications: Arc<NotificationService>,
     config: OnrampProcessorConfig,
 }
 
 impl OnrampProcessor {
-    pub fn new(
+pub fn new(
         db: Arc<PgPool>,
         stellar: Arc<StellarClient>,
         payment_orchestrator: Arc<PaymentOrchestrator>,
+        notifications: Arc<NotificationService>,
         config: OnrampProcessorConfig,
     ) -> Self {
         Self {
             db,
             stellar,
             payment_orchestrator,
+            notifications,
             config,
         }
     }
@@ -453,6 +457,7 @@ impl OnrampProcessor {
         .await?;
 
         info!(tx_id = %tx_id, "Transaction status updated to processing");
+        self.notifications.dispatch(*tx_id, NotificationEvent::FiatConfirmed).await?;
         metrics::counter!("onramp_payments_confirmed_total", "provider" => provider.as_str())
             .increment(1);
 
