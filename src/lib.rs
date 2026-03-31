@@ -58,6 +58,10 @@ pub mod admin;
 #[cfg(feature = "database")]
 pub mod analytics;
 
+// LP Payout Engine — reward calculation and disbursement for Liquidity Providers
+#[cfg(feature = "database")]
+pub mod lp_payout;
+
 // Data classification framework — authoritative sensitivity taxonomy and
 // policy enforcement for every data field on the platform.
 #[cfg(feature = "database")]

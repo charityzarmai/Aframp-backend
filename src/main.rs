@@ -15,6 +15,7 @@ mod developer_portal;
 mod error;
 mod health;
 mod logging;
+mod lp_payout;
 mod metrics;
 mod middleware;
 mod mtls;
@@ -841,6 +842,35 @@ async fn main() -> anyhow::Result<()> {
 
     // Create the application router with logging middleware
     info!("🛣️  Setting up application routes...");
+
+    // ── LP Payout Engine (Liquidity Provider rewards) ─────────────────────────
+    let lp_payout_routes = if let (Some(pool), Some(client)) =
+        (db_pool.clone(), stellar_client.clone())
+    {
+        let lp_repo = std::sync::Arc::new(lp_payout::LpPayoutRepository::new(pool.clone()));
+        let lp_config = lp_payout::LpPayoutWorkerConfig::from_env();
+
+        let lp_worker_enabled = std::env::var("LP_PAYOUT_WORKER_ENABLED")
+            .unwrap_or_else(|_| "true".to_string())
+            .to_lowercase()
+            != "false";
+
+        if lp_worker_enabled {
+            if lp_config.pool_id.is_empty() {
+                warn!("LP_STELLAR_POOL_ID not set — LP payout worker will skip snapshots");
+            }
+            let worker = lp_payout::LpPayoutWorker::new(lp_repo.clone(), client, lp_config);
+            tokio::spawn(worker.run(worker_shutdown_rx.clone()));
+            info!("✅ LP Payout worker started");
+        } else {
+            info!("LP Payout worker disabled (LP_PAYOUT_WORKER_ENABLED=false)");
+        }
+
+        lp_payout::lp_payout_routes(lp_repo)
+    } else {
+        info!("⏭️  Skipping LP payout routes (missing database or stellar client)");
+        Router::new()
+    };
 
     // Setup onramp routes (quote service)
     let onramp_routes = if let (Some(pool), Some(cache), Some(client)) =
@@ -1906,6 +1936,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(Router::new().nest("/api/admin/security", mtls_admin_routes))
         .merge(transparency_routes)
         .merge(security_compliance_routes)
+        .merge(lp_payout_routes)
         .with_state(AppState {
             db_pool,
             redis_cache,
