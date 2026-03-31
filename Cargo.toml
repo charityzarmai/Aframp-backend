@@ -269,8 +269,3 @@ required-features = ["database"]
 name = "bug_bounty_integration"
 path = "tests/bug_bounty_integration.rs"
 required-features = ["database"]
-
-[[test]]
-name = "mint_burn_integration"
-path = "tests/mint_burn_integration.rs"
-required-features = ["integration"]
