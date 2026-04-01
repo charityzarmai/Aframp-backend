@@ -3,9 +3,9 @@
 //! All metrics are registered in a single global registry exposed at GET /metrics.
 //! Metric names follow Prometheus naming conventions: snake_case, unit suffix where
 //! applicable, and the `aframp_` namespace prefix.
-
 pub mod geo_restriction;
 pub mod handler;
+pub mod issuer;
 pub mod tests;
 
 use prometheus::{
@@ -653,16 +653,15 @@ pub mod security {
     use super::*;
 
     static REQUEST_ANOMALY_FLAGS_TOTAL: OnceLock<CounterVec> = OnceLock::new();
+    static REPLAY_ATTEMPTS_TOTAL: OnceLock<CounterVec> = OnceLock::new();
+    static TIMESTAMP_REJECTIONS_TOTAL: OnceLock<CounterVec> = OnceLock::new();
+    static TIMESTAMP_DELTA_SECONDS: OnceLock<HistogramVec> = OnceLock::new();
 
     pub fn request_anomaly_flags_total() -> &'static CounterVec {
         REQUEST_ANOMALY_FLAGS_TOTAL
             .get()
             .expect("metrics not initialised")
     }
-
-    static REPLAY_ATTEMPTS_TOTAL: OnceLock<CounterVec> = OnceLock::new();
-    static TIMESTAMP_REJECTIONS_TOTAL: OnceLock<CounterVec> = OnceLock::new();
-    static TIMESTAMP_DELTA_SECONDS: OnceLock<HistogramVec> = OnceLock::new();
 
     /// Increment when a replay is detected (nonce already seen).
     pub fn replay_attempts_total() -> &'static CounterVec {
@@ -834,110 +833,6 @@ pub mod ip_detection {
 }
 
 // ---------------------------------------------------------------------------
-// Alerting-specific metrics (Issue #111)
-//
-// These metrics are consumed directly by Prometheus alert rules and are not
-// derived from existing counters/histograms. They expose state that cannot
-// be computed from rate() expressions alone.
-// ---------------------------------------------------------------------------
-
-pub mod alerting {
-    use super::*;
-    use prometheus::{register_counter_vec_with_registry, register_gauge_vec_with_registry};
-
-    /// Gauge: Unix timestamp (seconds) of the last successful exchange rate
-    /// update per currency pair. Alert rules compute staleness as
-    /// `time() - aframp_exchange_rate_last_updated_timestamp_seconds`.
-    static EXCHANGE_RATE_LAST_UPDATED: OnceLock<GaugeVec> = OnceLock::new();
-
-    /// Gauge: Unix timestamp (seconds) of the last completed worker cycle.
-    /// Alert rules compute missed-cycle age as
-    /// `time() - aframp_worker_last_cycle_timestamp_seconds`.
-    static WORKER_LAST_CYCLE_TIMESTAMP: OnceLock<GaugeVec> = OnceLock::new();
-
-    /// Gauge: Number of transactions currently in a pending state that have
-    /// exceeded the configured processing timeout.
-    static PENDING_TRANSACTIONS_STALE: OnceLock<GaugeVec> = OnceLock::new();
-
-    /// Counter: Total rate-limit breaches (HTTP 429 responses) by endpoint.
-    static RATE_LIMIT_BREACHES_TOTAL: OnceLock<CounterVec> = OnceLock::new();
-
-    pub fn exchange_rate_last_updated() -> &'static GaugeVec {
-        EXCHANGE_RATE_LAST_UPDATED
-            .get()
-            .expect("alerting metrics not initialised")
-    }
-
-    pub fn worker_last_cycle_timestamp() -> &'static GaugeVec {
-        WORKER_LAST_CYCLE_TIMESTAMP
-            .get()
-            .expect("alerting metrics not initialised")
-    }
-
-    pub fn pending_transactions_stale() -> &'static GaugeVec {
-        PENDING_TRANSACTIONS_STALE
-            .get()
-            .expect("alerting metrics not initialised")
-    }
-
-    pub fn rate_limit_breaches_total() -> &'static CounterVec {
-        RATE_LIMIT_BREACHES_TOTAL
-            .get()
-            .expect("alerting metrics not initialised")
-    }
-
-    pub(super) fn register(r: &Registry) {
-        EXCHANGE_RATE_LAST_UPDATED
-            .set(
-                register_gauge_vec_with_registry!(
-                    "aframp_exchange_rate_last_updated_timestamp_seconds",
-                    "Unix timestamp of the last successful exchange rate update per currency pair",
-                    &["currency_pair"],
-                    r
-                )
-                .unwrap(),
-            )
-            .ok();
-
-        WORKER_LAST_CYCLE_TIMESTAMP
-            .set(
-                register_gauge_vec_with_registry!(
-                    "aframp_worker_last_cycle_timestamp_seconds",
-                    "Unix timestamp of the last completed worker cycle",
-                    &["worker"],
-                    r
-                )
-                .unwrap(),
-            )
-            .ok();
-
-        PENDING_TRANSACTIONS_STALE
-            .set(
-                register_gauge_vec_with_registry!(
-                    "aframp_pending_transactions_stale_total",
-                    "Number of pending transactions that have exceeded the processing timeout",
-                    &["tx_type"],
-                    r
-                )
-                .unwrap(),
-            )
-            .ok();
-
-        RATE_LIMIT_BREACHES_TOTAL
-            .set(
-                register_counter_vec_with_registry!(
-                    "aframp_rate_limit_breaches_total",
-                    "Total rate-limit breaches (HTTP 429 responses) by endpoint",
-                    &["endpoint"],
-                    r
-                )
-                .unwrap(),
-            )
-            .ok();
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Register all metrics
 // ---------------------------------------------------------------------------
 
@@ -953,15 +848,22 @@ fn register_all(r: &Registry) {
     service_auth::register(r);
     ip_detection::register(r);
     alerting::register(r);
+    issuer::register(r);
     crate::ddos::metrics::register(r);
     crate::crypto::metrics::register(r);
+    crate::admin::mint_signer_metrics::register(r);
     crate::key_management::metrics::register(r);
     crate::pentest::metrics::register(r);
     crate::masking::metrics::register(r);
     crate::gateway::metrics::register(r);
+
+    backup::register(r);
+    #[cfg(feature = "database")]
+
     crate::analytics::metrics::register(r);
     crate::adaptive_rate_limit::metrics::register(r);
     crate::security_compliance::metrics::register(r);
+
 }
 
 // ---------------------------------------------------------------------------
@@ -970,4 +872,75 @@ fn register_all(r: &Registry) {
 
 pub fn key_prefix(key: &str) -> &str {
     key.find(':').map(|i| &key[..i]).unwrap_or(key)
+}
+
+// ---------------------------------------------------------------------------
+// Backup metrics (Issue #119)
+// ---------------------------------------------------------------------------
+
+pub mod backup {
+    use super::*;
+
+    static LAST_SNAPSHOT_TIMESTAMP: OnceLock<GaugeVec> = OnceLock::new();
+    static WAL_ARCHIVING_LAG: OnceLock<GaugeVec> = OnceLock::new();
+    static VERIFICATION_STATUS: OnceLock<GaugeVec> = OnceLock::new();
+
+    /// Record the Unix timestamp of the last successful snapshot.
+    pub fn set_last_snapshot_timestamp(ts: f64) {
+        if let Some(g) = LAST_SNAPSHOT_TIMESTAMP.get() {
+            g.with_label_values(&[]).set(ts);
+        }
+    }
+
+    /// Record the current WAL archiving lag in seconds.
+    pub fn set_wal_lag(seconds: f64) {
+        if let Some(g) = WAL_ARCHIVING_LAG.get() {
+            g.with_label_values(&[]).set(seconds);
+        }
+    }
+
+    /// Record the verification status of the latest snapshot (1 = verified, 0 = failed).
+    pub fn set_verification_status(ok: bool) {
+        if let Some(g) = VERIFICATION_STATUS.get() {
+            g.with_label_values(&[]).set(if ok { 1.0 } else { 0.0 });
+        }
+    }
+
+    pub(super) fn register(r: &Registry) {
+        LAST_SNAPSHOT_TIMESTAMP
+            .set(
+                register_gauge_vec_with_registry!(
+                    "aframp_backup_last_successful_snapshot_timestamp_seconds",
+                    "Unix timestamp of the last successful database snapshot",
+                    &[],
+                    r
+                )
+                .unwrap(),
+            )
+            .ok();
+
+        WAL_ARCHIVING_LAG
+            .set(
+                register_gauge_vec_with_registry!(
+                    "aframp_backup_wal_archiving_lag_seconds",
+                    "Seconds since the last WAL segment was archived",
+                    &[],
+                    r
+                )
+                .unwrap(),
+            )
+            .ok();
+
+        VERIFICATION_STATUS
+            .set(
+                register_gauge_vec_with_registry!(
+                    "aframp_backup_verification_status",
+                    "Latest backup verification result: 1 = verified, 0 = failed",
+                    &[],
+                    r
+                )
+                .unwrap(),
+            )
+            .ok();
+    }
 }
