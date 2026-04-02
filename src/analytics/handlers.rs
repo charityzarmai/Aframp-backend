@@ -3,7 +3,7 @@ use super::repository::AnalyticsRepository;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    response::{IntoResponse, Json},
+    response::Json,
 };
 use chrono::{Duration, Utc};
 use serde_json::json;
@@ -11,8 +11,6 @@ use std::sync::Arc;
 use tracing::error;
 
 pub type AnalyticsState = Arc<AnalyticsRepository>;
-
-// ── Consumer-facing endpoints ────────────────────────────────────────────────
 
 pub async fn get_usage_summary(
     State(repo): State<AnalyticsState>,
@@ -224,4 +222,5 @@ pub async fn get_consumer_detail(
         "health_score": health_score,
         "features": features
     })))
+
 }
