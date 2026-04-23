@@ -15,6 +15,7 @@ pub mod batch;
 pub mod key_rotation;
 pub mod developer;
 pub mod transparency;
+pub mod por;
 pub mod service_admin;
 pub mod mint;
 
