@@ -784,6 +784,32 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Start Monthly Attestation Worker
+    let attestation_enabled = std::env::var("ATTESTATION_ENABLED")
+        .unwrap_or_else(|_| "true".to_string())
+        .to_lowercase() != "false";
+
+    if attestation_enabled {
+        if let Some(pool) = db_pool.clone() {
+            let transparency_key = std::env::var("TRANSPARENCY_SIGNING_KEY").ok();
+            if let Ok(trans_svc) = services::transparency::TransparencyService::new(pool.clone(), transparency_key) {
+                let trans_svc = Arc::new(trans_svc);
+                let audit_repo = Arc::new(audit::repository::AuditLogRepository::new(pool.clone()));
+                let attestation_service = Arc::new(crate::reporting::AttestationService::new(
+                    pool,
+                    trans_svc,
+                    audit_repo,
+                ));
+                let attestation_worker = workers::attestation_worker::AttestationWorker::new(
+                    attestation_service,
+                    notification_service.clone(),
+                );
+                tokio::spawn(attestation_worker.run(worker_shutdown_rx.clone()));
+                info!("✅ Monthly attestation worker started");
+            }
+        }
+    }
+
     // Initialize webhook processor and retry worker
     let webhook_routes = if let Some(pool) = db_pool.clone() {
         let webhook_repo = std::sync::Arc::new(
