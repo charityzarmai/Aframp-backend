@@ -274,3 +274,13 @@ required-features = ["integration"]
 name = "bug_bounty_integration"
 path = "tests/bug_bounty_integration.rs"
 required-features = ["database"]
+
+[[test]]
+name = "wallet_unit_tests"
+path = "tests/wallet_unit_tests.rs"
+required-features = ["database"]
+
+[[test]]
+name = "wallet_integration_tests"
+path = "tests/wallet_integration_tests.rs"
+required-features = ["integration"]

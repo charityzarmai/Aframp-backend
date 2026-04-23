@@ -177,6 +177,10 @@ pub mod compliance_registry;
 #[cfg(feature = "database")]
 pub mod corridors;
 
+// Non-custodial wallet architecture, recovery, history, and portfolio
+#[cfg(feature = "database")]
+pub mod wallet;
+
 // Contract error enum for Soroban (only when not using database feature)
 #[cfg(not(feature = "database"))]
 #[contracterror]
