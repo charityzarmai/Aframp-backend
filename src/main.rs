@@ -37,6 +37,14 @@ mod services;
 mod telemetry;
 mod wallet;
 mod workers;
+// Issue #334 — Merchant CRM & Customer Insights
+mod merchant_crm;
+// Issue #333 — Merchant Invoicing & Automated Tax Calculation
+mod merchant_invoicing;
+// Issue #335 — Multi-Store & Franchise Management
+mod franchise;
+// Issue #322 — Wallet Creation & Stellar Account Provisioning
+mod wallet_provisioning;
 mod oracle;
 
 // Imports
