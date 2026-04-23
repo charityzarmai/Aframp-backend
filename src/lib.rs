@@ -151,6 +151,10 @@ pub mod vault;
 // Treasury Emergency Intervention Framework — one-click peg stabilisation
 #[cfg(feature = "database")]
 pub mod treasury;
+
+// Multi-Signature Governance Framework — M-of-N signing for Mint/Burn/SetOptions
+#[cfg(feature = "database")]
+pub mod multisig;
 // Adaptive rate limiting and throttling system
 #[cfg(feature = "cache")]
 pub mod adaptive_rate_limit;

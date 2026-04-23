@@ -22,6 +22,7 @@ mod logging;
 mod lp_onboarding;
 mod lp_payout;
 mod metrics;
+mod multisig;
 mod peg_monitor;
 mod middleware;
 mod mtls;
@@ -1915,6 +1916,23 @@ async fn main() -> anyhow::Result<()> {
         info!("⏭️  Skipping OAuth routes (missing database or cache)");
         Router::new()
     };
+
+    // ── Multi-Sig Governance routes (Issue: Multi-Sig Governance) ────────────
+    let governance_routes = if let (Some(pool), Some(client)) =
+        (db_pool.clone(), stellar_client.clone())
+    {
+        let repo = std::sync::Arc::new(multisig::repository::MultiSigRepository::new(pool));
+        let svc = std::sync::Arc::new(multisig::MultiSigService::from_env(
+            repo,
+            std::sync::Arc::new(client),
+        ));
+        info!("🔐 Multi-sig governance routes enabled");
+        multisig::routes::governance_router(svc)
+    } else {
+        info!("⏭️  Skipping multi-sig governance routes (missing database or stellar client)");
+        Router::new()
+    };
+
     let app = Router::new()
         .route("/", get(root))
         .route("/health", get(health))
@@ -2076,6 +2094,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(Router::new().nest("/api/admin/security", mtls_admin_routes))
         .merge(security_compliance_routes)
         .merge(lp_payout_routes)
+        .merge(governance_routes)
         .merge(lp_onboarding_routes)
         .with_state(AppState {
             db_pool,

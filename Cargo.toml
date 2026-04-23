@@ -249,6 +249,8 @@ tokio       = { version = "1.49.0", features = ["full"] }
 tokio-test  = "0.4"
 bigdecimal  = "0.4"
 proptest    = "1.4"
+base64      = "0.22.1"
+uuid        = { version = "1.6", features = ["v4"] }
 
 [[test]]
 name = "payload_encryption_test"
@@ -273,4 +275,9 @@ required-features = ["integration"]
 [[test]]
 name = "bug_bounty_integration"
 path = "tests/bug_bounty_integration.rs"
+required-features = ["database"]
+
+[[test]]
+name = "multisig_governance_test"
+path = "tests/multisig_governance_test.rs"
 required-features = ["database"]
