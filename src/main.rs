@@ -784,6 +784,36 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Start Proof-of-Reserves (PoR) Worker — Issue #297
+    let por_enabled = std::env::var("POR_WORKER_ENABLED")
+        .unwrap_or_else(|_| "true".to_string())
+        .to_lowercase()
+        != "false";
+    if por_enabled {
+        if let (Some(pool), Some(client)) = (db_pool.clone(), stellar_client.clone()) {
+            let asset_issuer = std::env::var("CNGN_ISSUER_ADDRESS")
+                .or_else(|_| std::env::var("CNGN_ISSUER_MAINNET"))
+                .unwrap_or_default();
+
+            if asset_issuer.is_empty() {
+                warn!("CNGN_ISSUER_ADDRESS not set — skipping PoR worker");
+            } else {
+                let por_signing_key = api::transparency::load_signing_key();
+                let por_worker = workers::por_worker::ProofOfReservesWorker::new(
+                    pool,
+                    client,
+                    por_signing_key,
+                    audit_writer.clone(),
+                    asset_issuer,
+                );
+                tokio::spawn(por_worker.run(worker_shutdown_rx.clone()));
+                info!("✅ Proof-of-Reserves (PoR) worker started (60-min interval)");
+            }
+        } else {
+            info!("⏭️  Skipping PoR worker (no database or Stellar client)");
+        }
+    } else {
+        info!("PoR worker disabled (POR_WORKER_ENABLED=false)");
     // Start Monthly Attestation Worker
     let attestation_enabled = std::env::var("ATTESTATION_ENABLED")
         .unwrap_or_else(|_| "true".to_string())
@@ -2046,6 +2076,16 @@ async fn main() -> anyhow::Result<()> {
         Router::new()
     };
 
+    // ── Proof-of-Reserves public endpoint (Issue #297) ───────────────────────
+    let por_routes = if let Some(pool) = db_pool.clone() {
+        let state = std::sync::Arc::new(api::por::PorState { db: pool });
+        info!("🔍 Proof-of-Reserves (PoR) routes enabled");
+        api::por::por_routes(state)
+    } else {
+        info!("⏭️  Skipping PoR routes (no database)");
+        Router::new()
+    };
+
     // ── Peg Integrity Monitor ─────────────────────────────────────────────────
     let peg_monitor_routes = if let (Some(pool), Some(client)) =
         (db_pool.clone(), stellar_client.clone())
@@ -2188,6 +2228,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(pentest_routes)
         .merge(liquidity_routes)
         .merge(transparency_routes)
+        .merge(por_routes)
         .merge(bug_bounty_routes)
         .merge(developer_portal::routes::register_developer_portal_routes(Router::new(), db_pool.clone()))
         .merge(Router::new().nest("/api/admin/security", mtls_admin_routes))

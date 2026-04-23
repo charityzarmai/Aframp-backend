@@ -18,4 +18,5 @@ pub mod transaction_monitor;
 pub mod webhook_retry;
 pub mod supply_monitor_worker;
 pub mod liquidity_monitor_worker;
+pub mod por_worker;
 pub mod attestation_worker;
