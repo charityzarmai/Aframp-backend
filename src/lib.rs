@@ -198,6 +198,10 @@ pub mod merchant_crm;
 #[cfg(feature = "database")]
 pub mod merchant_invoicing;
 
+// Issue #336 — Merchant Multi-Sig & Treasury Controls
+#[cfg(feature = "database")]
+pub mod merchant_multisig;
+
 // Issue #335 — Multi-Store & Franchise Management
 #[cfg(feature = "database")]
 pub mod franchise;
@@ -211,6 +215,12 @@ pub mod wallet;
 // POS QR Payment System — Physical retail integration
 #[cfg(feature = "database")]
 pub mod pos;
+
+// Issue #338 — Open-Source AI Agent SDK for Stellar
+// Provides an intent-based API for autonomous AI agents to manage their own
+// economic lifecycle on the Stellar network using cNGN and the x402 protocol.
+#[cfg(feature = "database")]
+pub mod agent_sdk;
 
 // Merchant Gateway — Commercial adoption entry point for businesses
 #[cfg(feature = "database")]
