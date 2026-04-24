@@ -47,6 +47,7 @@ mod franchise;
 mod wallet_provisioning;
 mod oracle;
 mod agent_cfo;
+mod agent_dashboard;
 
 // Imports
 use std::sync::Arc;
@@ -2232,6 +2233,16 @@ async fn main() -> anyhow::Result<()> {
         Router::new()
     };
 
+    // ── Agent Admin Dashboard — HITL control system ───────────────────────
+    let agent_dashboard_routes = if let Some(pool) = db_pool.clone() {
+        let svc = std::sync::Arc::new(agent_dashboard::service::AgentDashboardService::new(pool));
+        info!("✅ Agent Admin Dashboard routes enabled");
+        agent_dashboard::routes::agent_dashboard_routes(svc)
+    } else {
+        info!("⏭️  Skipping Agent Dashboard routes (no database)");
+        Router::new()
+    };
+
     let app = Router::new()
         .route("/", get(root))
         .route("/health", get(health))
@@ -2288,6 +2299,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(governance_routes)
         .merge(lp_onboarding_routes)
         .merge(agent_cfo_routes)
+        .merge(agent_dashboard_routes)
         .merge(pos_routes)
         .with_state(AppState {
             db_pool,

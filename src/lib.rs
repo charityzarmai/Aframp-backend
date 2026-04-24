@@ -156,6 +156,10 @@ pub mod treasury;
 #[cfg(feature = "database")]
 pub mod agent_cfo;
 
+// Agent Admin Dashboard — HITL control system for autonomous agents
+#[cfg(feature = "database")]
+pub mod agent_dashboard;
+
 // Multi-Signature Governance Framework — M-of-N signing for Mint/Burn/SetOptions
 #[cfg(feature = "database")]
 pub mod multisig;
