@@ -216,6 +216,11 @@ pub mod pos;
 #[cfg(feature = "database")]
 pub mod merchant_gateway;
 
+// Autonomous Bargaining Protocol — agent-to-agent negotiation with x402 entrance fee
+// and Soroban escrow-on-success (Issue #5.03)
+#[cfg(feature = "database")]
+pub mod negotiation;
+
 // Contract error enum for Soroban (only when not using database feature)
 #[cfg(not(feature = "database"))]
 #[contracterror]
