@@ -156,6 +156,9 @@ pub mod treasury;
 #[cfg(feature = "database")]
 pub mod agent_cfo;
 
+// Agent Swarm Intelligence — decentralized P2P coordination layer
+#[cfg(feature = "database")]
+pub mod agent_swarm;
 // Agent Admin Dashboard — HITL control system for autonomous agents
 #[cfg(feature = "database")]
 pub mod agent_dashboard;

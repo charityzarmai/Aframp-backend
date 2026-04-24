@@ -49,6 +49,7 @@ mod franchise;
 mod wallet_provisioning;
 mod oracle;
 mod agent_cfo;
+mod agent_swarm;
 mod agent_dashboard;
 
 // Issue #337 — Merchant Dispute Resolution & Clawback Management
@@ -2270,6 +2271,30 @@ async fn main() -> anyhow::Result<()> {
         Router::new()
     };
 
+    // ── Agent Swarm Intelligence ──────────────────────────────────────────────
+    let agent_swarm_routes = if let Some(pool) = db_pool.clone() {
+        use agent_swarm::{
+            consensus::ConsensusEngine,
+            delegation::DelegationEngine,
+            discovery::PeerDiscovery,
+            gossip::GossipStore,
+            handlers::SwarmState,
+            settlement::SettlementEngine,
+        };
+        let swarm_state = SwarmState {
+            discovery: std::sync::Arc::new(PeerDiscovery::new(pool.clone())),
+            delegation: std::sync::Arc::new(DelegationEngine::new(pool.clone())),
+            consensus: std::sync::Arc::new(ConsensusEngine::new(pool.clone())),
+            gossip: std::sync::Arc::new(GossipStore::new(pool.clone())),
+            settlement: std::sync::Arc::new(SettlementEngine::new(pool.clone())),
+            db: pool.clone(),
+        };
+        tokio::spawn(PeerDiscovery::run_heartbeat_sweep(pool.clone(), worker_shutdown_rx.clone()));
+        tokio::spawn(GossipStore::run_eviction_worker(pool, worker_shutdown_rx.clone()));
+        info!("✅ Agent Swarm Intelligence routes enabled");
+        agent_swarm::routes::agent_swarm_routes(swarm_state)
+    } else {
+        info!("⏭️  Skipping Agent Swarm routes (no database)");
     // ── Agent Admin Dashboard — HITL control system ───────────────────────
     let agent_dashboard_routes = if let Some(pool) = db_pool.clone() {
         let svc = std::sync::Arc::new(agent_dashboard::service::AgentDashboardService::new(pool));
@@ -2337,6 +2362,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(governance_routes)
         .merge(lp_onboarding_routes)
         .merge(agent_cfo_routes)
+        .merge(agent_swarm_routes)
         .merge(agent_dashboard_routes)
         .merge(pos_routes)
         .merge(dispute_routes)
