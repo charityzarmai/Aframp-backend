@@ -237,6 +237,10 @@ pub mod agent_sdk;
 #[cfg(feature = "database")]
 pub mod merchant_gateway;
 
+// Autonomous Bargaining Protocol — agent-to-agent negotiation with x402 entrance fee
+// and Soroban escrow-on-success (Issue #5.03)
+#[cfg(feature = "database")]
+pub mod negotiation;
 // KYA (Know Your Agent) — Decentralized Agent Identity & Reputation System
 // Provides DID-based identity registry, on-chain reputation, attestations,
 // zero-knowledge competence proofs, and cross-platform reputation portability
