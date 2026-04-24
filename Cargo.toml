@@ -311,6 +311,10 @@ name = "multisig_governance_test"
 path = "tests/multisig_governance_test.rs"
 required-features = ["database"]
 
+[[test]]
+name = "dispute_resolution_tests"
+path = "tests/dispute_resolution_tests.rs"
+required-features = ["database"]
 # ---------------------------------------------------------------------------
 # Benchmarks (Issue #345 -- zero-copy XDR parser)
 # ---------------------------------------------------------------------------

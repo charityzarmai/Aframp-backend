@@ -49,7 +49,8 @@ mod franchise;
 mod wallet_provisioning;
 mod oracle;
 
-// Imports
+// Issue #337 — Merchant Dispute Resolution & Clawback Management
+mod dispute;
 use std::sync::Arc;
 use crate::config::AppConfig;
 use crate::health::{HealthChecker, HealthStatus};
