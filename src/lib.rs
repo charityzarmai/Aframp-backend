@@ -216,6 +216,12 @@ pub mod pos;
 #[cfg(feature = "database")]
 pub mod merchant_gateway;
 
+// KYA (Know Your Agent) — Decentralized Agent Identity & Reputation System
+// Provides DID-based identity registry, on-chain reputation, attestations,
+// zero-knowledge competence proofs, and cross-platform reputation portability
+#[cfg(feature = "database")]
+pub mod kya;
+
 // Contract error enum for Soroban (only when not using database feature)
 #[cfg(not(feature = "database"))]
 #[contracterror]
