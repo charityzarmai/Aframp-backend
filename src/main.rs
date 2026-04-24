@@ -41,13 +41,19 @@ mod workers;
 mod merchant_crm;
 // Issue #333 — Merchant Invoicing & Automated Tax Calculation
 mod merchant_invoicing;
+// Issue #336 — Merchant Multi-Sig & Treasury Controls
+mod merchant_multisig;
 // Issue #335 — Multi-Store & Franchise Management
 mod franchise;
 // Issue #322 — Wallet Creation & Stellar Account Provisioning
 mod wallet_provisioning;
 mod oracle;
+mod agent_cfo;
+mod agent_swarm;
+mod agent_dashboard;
 
-// Imports
+// Issue #337 — Merchant Dispute Resolution & Clawback Management
+mod dispute;
 use std::sync::Arc;
 use crate::config::AppConfig;
 use crate::health::{HealthChecker, HealthStatus};
@@ -968,9 +974,21 @@ async fn main() -> anyhow::Result<()> {
         Router::new()
     };
 
+    // ── Merchant Multi-Sig & Treasury Controls (Issue #336) ──────────────────
+    let merchant_multisig_routes = if let Some(pool) = db_pool.clone() {
+        let svc = std::sync::Arc::new(merchant_multisig::MerchantMultisigService::new(
+            pool,
+            audit_writer.clone(),
+        ));
+        info!("✅ Merchant Multi-Sig routes enabled");
+        merchant_multisig::merchant_multisig_routes(svc)
+    } else {
+        info!("⏭️  Skipping merchant multisig routes (no database)");
+        Router::new()
+    };
+
     // ── LP Payout Engine (Liquidity Provider rewards) ─────────────────────────
-    let lp_payout_routes = if let (Some(pool), Some(client)) =
-        (db_pool.clone(), stellar_client.clone())
+    let lp_payout_routes = if let (Some(pool), Some(client)) =        (db_pool.clone(), stellar_client.clone())
     {
         let lp_repo = std::sync::Arc::new(lp_payout::LpPayoutRepository::new(pool.clone()));
         let lp_config = lp_payout::LpPayoutWorkerConfig::from_env();
@@ -2037,6 +2055,28 @@ async fn main() -> anyhow::Result<()> {
         Router::new()
     };
 
+    // ── Dispute Resolution & Clawback Management (Issue #337) ────────────────
+    let dispute_routes = if let Some(pool) = db_pool.clone() {
+        let repo = std::sync::Arc::new(dispute::DisputeRepository::new(pool));
+        let svc = std::sync::Arc::new(dispute::DisputeService::new(repo.clone()));
+        // Spawn background worker to escalate overdue disputes every 5 minutes.
+        {
+            let svc_clone = svc.clone();
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(std::time::Duration::from_secs(300));
+                loop {
+                    ticker.tick().await;
+                    let _ = svc_clone.escalate_overdue_disputes().await;
+                }
+            });
+        }
+        info!("⚖️  Dispute resolution routes enabled");
+        dispute::dispute_routes().with_state(svc)
+    } else {
+        info!("⏭️  Skipping dispute routes (no database)");
+        Router::new()
+    };
+
     // ── Multi-Sig Governance routes (Issue: Multi-Sig Governance) ────────────
     let governance_routes = if let (Some(pool), Some(client)) =
         (db_pool.clone(), stellar_client.clone())
@@ -2209,6 +2249,62 @@ async fn main() -> anyhow::Result<()> {
         info!("⏭️  Skipping POS routes (missing database or stellar client)");
         Router::new()
     };
+    // ── Agent CFO — In-House Treasury for Autonomous Agents ─────────────────
+    let agent_cfo_routes = if let Some(pool) = db_pool.clone() {
+        let engine = std::sync::Arc::new(agent_cfo::engine::AgentCfoEngine::new(pool.clone()));
+        let ledger = engine.ledger();
+        let cfo_state = agent_cfo::handlers::CfoState {
+            engine,
+            ledger,
+            db: pool.clone(),
+        };
+        // Start burn-rate watchdog
+        let watchdog = agent_cfo::watchdog::BurnRateWatchdog::new(
+            pool,
+            agent_cfo::watchdog::WatchdogConfig::from_env(),
+        );
+        tokio::spawn(watchdog.run(worker_shutdown_rx.clone()));
+        info!("✅ Agent CFO watchdog started");
+        agent_cfo::routes::agent_cfo_routes(cfo_state)
+    } else {
+        info!("⏭️  Skipping Agent CFO routes (no database)");
+        Router::new()
+    };
+
+    // ── Agent Swarm Intelligence ──────────────────────────────────────────────
+    let agent_swarm_routes = if let Some(pool) = db_pool.clone() {
+        use agent_swarm::{
+            consensus::ConsensusEngine,
+            delegation::DelegationEngine,
+            discovery::PeerDiscovery,
+            gossip::GossipStore,
+            handlers::SwarmState,
+            settlement::SettlementEngine,
+        };
+        let swarm_state = SwarmState {
+            discovery: std::sync::Arc::new(PeerDiscovery::new(pool.clone())),
+            delegation: std::sync::Arc::new(DelegationEngine::new(pool.clone())),
+            consensus: std::sync::Arc::new(ConsensusEngine::new(pool.clone())),
+            gossip: std::sync::Arc::new(GossipStore::new(pool.clone())),
+            settlement: std::sync::Arc::new(SettlementEngine::new(pool.clone())),
+            db: pool.clone(),
+        };
+        tokio::spawn(PeerDiscovery::run_heartbeat_sweep(pool.clone(), worker_shutdown_rx.clone()));
+        tokio::spawn(GossipStore::run_eviction_worker(pool, worker_shutdown_rx.clone()));
+        info!("✅ Agent Swarm Intelligence routes enabled");
+        agent_swarm::routes::agent_swarm_routes(swarm_state)
+    } else {
+        info!("⏭️  Skipping Agent Swarm routes (no database)");
+    // ── Agent Admin Dashboard — HITL control system ───────────────────────
+    let agent_dashboard_routes = if let Some(pool) = db_pool.clone() {
+        let svc = std::sync::Arc::new(agent_dashboard::service::AgentDashboardService::new(pool));
+        info!("✅ Agent Admin Dashboard routes enabled");
+        agent_dashboard::routes::agent_dashboard_routes(svc)
+    } else {
+        info!("⏭️  Skipping Agent Dashboard routes (no database)");
+        Router::new()
+    };
+
     let app = Router::new()
         .route("/", get(root))
         .route("/health", get(health))
@@ -2216,30 +2312,15 @@ async fn main() -> anyhow::Result<()> {
         .route("/health/live", get(liveness))
         .route("/metrics", get(metrics::handler::metrics_handler))
         .route("/api/stellar/account/{address}", get(get_stellar_account))
-        .route(
-            "/api/trustlines/operations",
-            post(create_trustline_operation),
-        )
-        .route(
-            "/api/trustlines/operations/{id}",
-            patch(update_trustline_operation_status),
-        )
-        .route(
-            "/api/trustlines/operations/wallet/{address}",
-            get(list_trustline_operations_by_wallet),
-        )
+        .route("/api/trustlines/operations", post(create_trustline_operation))
+        .route("/api/trustlines/operations/{id}", patch(update_trustline_operation_status))
+        .route("/api/trustlines/operations/wallet/{address}", get(list_trustline_operations_by_wallet))
         .route("/api/fees/calculate", post(calculate_fee))
         .route("/api/cngn/trustlines/check", post(check_cngn_trustline))
-        .route(
-            "/api/cngn/trustlines/preflight",
-            post(preflight_cngn_trustline),
-        )
+        .route("/api/cngn/trustlines/preflight", post(preflight_cngn_trustline))
         .route("/api/cngn/trustlines/build", post(build_cngn_trustline))
         .route("/api/cngn/trustlines/submit", post(submit_cngn_trustline))
-        .route(
-            "/api/cngn/trustlines/retry/{id}",
-            post(retry_cngn_trustline),
-        )
+        .route("/api/cngn/trustlines/retry/{id}", post(retry_cngn_trustline))
         .route("/api/cngn/payments/build", post(build_cngn_payment))
         .route("/api/cngn/payments/sign", post(sign_cngn_payment))
         .route("/api/cngn/payments/submit", post(submit_cngn_payment))
@@ -2247,6 +2328,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(onramp_routes)
         .merge(offramp_routes)
         .merge(wallet_routes)
+        .merge(noncustodial_wallet_routes)
         .merge(rates_routes)
         .merge(fees_routes)
         .merge(mint_routes)
@@ -2275,9 +2357,15 @@ async fn main() -> anyhow::Result<()> {
         .merge(Router::new().nest("/api/admin/security", mtls_admin_routes))
         .merge(security_compliance_routes)
         .merge(lp_payout_routes)
+        .merge(merchant_multisig_routes)
         .merge(oracle_routes)
         .merge(governance_routes)
         .merge(lp_onboarding_routes)
+        .merge(agent_cfo_routes)
+        .merge(agent_swarm_routes)
+        .merge(agent_dashboard_routes)
+        .merge(pos_routes)
+        .merge(dispute_routes)
         .with_state(AppState {
             db_pool,
             redis_cache,
