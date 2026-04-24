@@ -237,6 +237,11 @@ pub mod agent_sdk;
 #[cfg(feature = "database")]
 pub mod merchant_gateway;
 
+// KYA (Know Your Agent) — Decentralized Agent Identity & Reputation System
+// Provides DID-based identity registry, on-chain reputation, attestations,
+// zero-knowledge competence proofs, and cross-platform reputation portability
+#[cfg(feature = "database")]
+pub mod kya;
 // Issue #337 — Merchant Dispute Resolution & Clawback Management
 #[cfg(feature = "database")]
 pub mod dispute;
