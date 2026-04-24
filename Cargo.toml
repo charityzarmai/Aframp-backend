@@ -109,6 +109,13 @@ anyhow    = "1.0.100"
 thiserror = "2.0.18"
 
 # --- Nigerian bank account validation ---
+# --- Zero-copy XDR parsing (Issue #345) ---
+# zerocopy: safe zero-copy byte-to-struct casting without unsafe blocks.
+# bytes: reference-counted byte buffer for buffer pooling.
+zerocopy = { version = "0.7.35", features = ["derive"] }
+bytes    = "1.6.0"
+
+# --- Nigerian bank account validation ---
 nuban = "1.1.0"
 csv = "1.3"
 serde_yaml = "0.9"
@@ -127,7 +134,6 @@ prometheus = { version = "0.13", features = ["process"], optional = true }
 
 # PDF & Reporting
 typst = "0.11"
-qrcode = "0.14"
 chrono-tz = "0.9"
 
 # Additional crypto dependencies for admin auth
@@ -249,6 +255,9 @@ required-features = ["database"]
 # Dev dependencies
 # ---------------------------------------------------------------------------
 [dev-dependencies]
+# Criterion benchmarking harness (Issue #345)
+criterion = { version = "0.5.1", features = ["html_reports"] }
+
 soroban-sdk = { version = "25.0.1", features = ["testutils"] }
 wiremock = "0.6"
 serde_json = "1.0"
@@ -296,6 +305,20 @@ required-features = ["database"]
 name = "wallet_integration_tests"
 path = "tests/wallet_integration_tests.rs"
 required-features = ["integration"]
+
+[[test]]
 name = "multisig_governance_test"
 path = "tests/multisig_governance_test.rs"
 required-features = ["database"]
+
+[[test]]
+name = "dispute_resolution_tests"
+path = "tests/dispute_resolution_tests.rs"
+required-features = ["database"]
+# ---------------------------------------------------------------------------
+# Benchmarks (Issue #345 -- zero-copy XDR parser)
+# ---------------------------------------------------------------------------
+[[bench]]
+name = "xdr_parser"
+path = "benches/xdr_parser.rs"
+harness = false

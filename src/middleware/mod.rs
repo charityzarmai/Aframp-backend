@@ -36,3 +36,5 @@ pub mod scope_middleware;
 
 pub mod cors;
 pub mod security;
+
+pub mod edge_cache;
