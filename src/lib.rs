@@ -152,6 +152,17 @@ pub mod vault;
 #[cfg(feature = "database")]
 pub mod treasury;
 
+// In-House CFO — Autonomous Agent Treasury Management
+#[cfg(feature = "database")]
+pub mod agent_cfo;
+
+// Agent Swarm Intelligence — decentralized P2P coordination layer
+#[cfg(feature = "database")]
+pub mod agent_swarm;
+// Agent Admin Dashboard — HITL control system for autonomous agents
+#[cfg(feature = "database")]
+pub mod agent_dashboard;
+
 // Multi-Signature Governance Framework — M-of-N signing for Mint/Burn/SetOptions
 #[cfg(feature = "database")]
 pub mod multisig;
@@ -198,6 +209,10 @@ pub mod merchant_crm;
 #[cfg(feature = "database")]
 pub mod merchant_invoicing;
 
+// Issue #336 — Merchant Multi-Sig & Treasury Controls
+#[cfg(feature = "database")]
+pub mod merchant_multisig;
+
 // Issue #335 — Multi-Store & Franchise Management
 #[cfg(feature = "database")]
 pub mod franchise;
@@ -212,6 +227,12 @@ pub mod wallet;
 #[cfg(feature = "database")]
 pub mod pos;
 
+// Issue #338 — Open-Source AI Agent SDK for Stellar
+// Provides an intent-based API for autonomous AI agents to manage their own
+// economic lifecycle on the Stellar network using cNGN and the x402 protocol.
+#[cfg(feature = "database")]
+pub mod agent_sdk;
+
 // Merchant Gateway — Commercial adoption entry point for businesses
 #[cfg(feature = "database")]
 pub mod merchant_gateway;
@@ -220,6 +241,14 @@ pub mod merchant_gateway;
 // and Soroban escrow-on-success (Issue #5.03)
 #[cfg(feature = "database")]
 pub mod negotiation;
+// KYA (Know Your Agent) — Decentralized Agent Identity & Reputation System
+// Provides DID-based identity registry, on-chain reputation, attestations,
+// zero-knowledge competence proofs, and cross-platform reputation portability
+#[cfg(feature = "database")]
+pub mod kya;
+// Issue #337 — Merchant Dispute Resolution & Clawback Management
+#[cfg(feature = "database")]
+pub mod dispute;
 
 // Contract error enum for Soroban (only when not using database feature)
 #[cfg(not(feature = "database"))]
