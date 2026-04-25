@@ -144,41 +144,66 @@ pub struct WebhookDelivery {
     pub event_type: String,
     pub payload: serde_json::Value,
     pub signature: String,
+    pub idempotency_key: String,
+    pub queue_name: String,
     pub status: WebhookStatus,
     pub http_status_code: Option<i32>,
     pub response_body: Option<String>,
     pub error_message: Option<String>,
     pub retry_count: i32,
     pub next_retry_at: Option<DateTime<Utc>>,
+    pub locked_at: Option<DateTime<Utc>>,
+    pub locked_by: Option<String>,
     pub last_attempt_at: Option<DateTime<Utc>>,
     pub delivered_at: Option<DateTime<Utc>>,
+    pub dead_lettered_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, sqlx::Type)]
 #[sqlx(type_name = "text")]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum WebhookStatus {
     #[sqlx(rename = "pending")]
     Pending,
+    #[sqlx(rename = "retrying")]
+    Retrying,
     #[sqlx(rename = "delivered")]
     Delivered,
     #[sqlx(rename = "failed")]
     Failed,
     #[sqlx(rename = "abandoned")]
     Abandoned,
+    #[sqlx(rename = "dead_lettered")]
+    DeadLettered,
 }
 
 impl std::fmt::Display for WebhookStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             WebhookStatus::Pending => write!(f, "pending"),
+            WebhookStatus::Retrying => write!(f, "retrying"),
             WebhookStatus::Delivered => write!(f, "delivered"),
             WebhookStatus::Failed => write!(f, "failed"),
             WebhookStatus::Abandoned => write!(f, "abandoned"),
+            WebhookStatus::DeadLettered => write!(f, "dead_lettered"),
         }
     }
+}
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct WebhookEndpointCircuitBreaker {
+    pub id: Uuid,
+    pub merchant_id: Uuid,
+    pub webhook_url: String,
+    pub state: String,
+    pub consecutive_failures: i32,
+    pub opened_until: Option<DateTime<Utc>>,
+    pub last_failure_at: Option<DateTime<Utc>>,
+    pub last_success_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Serialize)]
@@ -270,15 +295,15 @@ impl MerchantApiKeyScope {
             MerchantApiKeyScope::RefundOnly => "refund_only",
         }
     }
-    
+
     pub fn can_create_payment(&self) -> bool {
         matches!(self, MerchantApiKeyScope::Full | MerchantApiKeyScope::WriteOnly)
     }
-    
+
     pub fn can_read_payment(&self) -> bool {
         matches!(self, MerchantApiKeyScope::Full | MerchantApiKeyScope::ReadOnly)
     }
-    
+
     pub fn can_refund(&self) -> bool {
         matches!(self, MerchantApiKeyScope::Full | MerchantApiKeyScope::RefundOnly)
     }

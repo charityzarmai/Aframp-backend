@@ -2,6 +2,10 @@
 
 use crate::database::error::{DatabaseError, DatabaseErrorKind};
 use crate::merchant_gateway::models::*;
+use crate::merchant_gateway::webhook_queue::{
+    circuit_decision_after_failure, is_circuit_breaker_failure, next_retry_at, should_dead_letter,
+    CircuitDecision, DEFAULT_CIRCUIT_COOLDOWN_SECS, DEFAULT_CIRCUIT_FAILURE_THRESHOLD,
+};
 use chrono::{DateTime, Duration, Utc};
 use rust_decimal::Decimal;
 use sqlx::PgPool;
@@ -350,13 +354,17 @@ impl WebhookDeliveryRepository {
         event_type: &str,
         payload: serde_json::Value,
         signature: &str,
+        idempotency_key: &str,
     ) -> Result<WebhookDelivery, DatabaseError> {
         sqlx::query_as::<_, WebhookDelivery>(
             r#"
             INSERT INTO merchant_webhook_deliveries (
-                payment_intent_id, merchant_id, webhook_url, event_type, payload, signature
+                payment_intent_id, merchant_id, webhook_url, event_type, payload,
+                signature, idempotency_key, queue_name, status
             )
-            VALUES ($1, $2, $3, $4, $5, $6)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, 'primary', 'pending')
+            ON CONFLICT (idempotency_key) DO UPDATE
+                SET updated_at = merchant_webhook_deliveries.updated_at
             RETURNING *
             "#,
         )
@@ -366,7 +374,18 @@ impl WebhookDeliveryRepository {
         .bind(event_type)
         .bind(payload)
         .bind(signature)
+        .bind(idempotency_key)
         .fetch_one(&self.pool)
+        .await
+        .map_err(DatabaseError::from_sqlx)
+    }
+
+    pub async fn find_by_id(&self, id: Uuid) -> Result<Option<WebhookDelivery>, DatabaseError> {
+        sqlx::query_as::<_, WebhookDelivery>(
+            "SELECT * FROM merchant_webhook_deliveries WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
         .await
         .map_err(DatabaseError::from_sqlx)
     }
@@ -381,8 +400,12 @@ impl WebhookDeliveryRepository {
             r#"
             UPDATE merchant_webhook_deliveries
             SET status = 'delivered',
+                queue_name = 'primary',
                 http_status_code = $2,
                 response_body = $3,
+                error_message = NULL,
+                locked_at = NULL,
+                locked_by = NULL,
                 delivered_at = NOW(),
                 last_attempt_at = NOW()
             WHERE id = $1
@@ -427,6 +450,250 @@ impl WebhookDeliveryRepository {
         .map_err(DatabaseError::from_sqlx)
     }
 
+    pub async fn record_delivery_failure(
+        &self,
+        webhook: &WebhookDelivery,
+        http_status: Option<i32>,
+        error_message: &str,
+        max_retries: u32,
+    ) -> Result<WebhookDelivery, DatabaseError> {
+        let now = Utc::now();
+        let next_attempt = webhook.retry_count + 1;
+        let exhausted = should_dead_letter(next_attempt, max_retries);
+        let retry_at = next_retry_at(now, next_attempt);
+        let next_status = if exhausted {
+            "dead_lettered"
+        } else {
+            "retrying"
+        };
+        let queue_name = if exhausted { "dead_letter" } else { "retry" };
+
+        let delivery = sqlx::query_as::<_, WebhookDelivery>(
+            r#"
+            UPDATE merchant_webhook_deliveries
+            SET retry_count = retry_count + 1,
+                http_status_code = $2,
+                error_message = $3,
+                last_attempt_at = NOW(),
+                next_retry_at = CASE WHEN $4 THEN NULL ELSE $5 END,
+                status = $6,
+                queue_name = $7,
+                locked_at = NULL,
+                locked_by = NULL,
+                dead_lettered_at = CASE WHEN $4 THEN NOW() ELSE dead_lettered_at END
+            WHERE id = $1
+            RETURNING *
+            "#,
+        )
+        .bind(webhook.id)
+        .bind(http_status)
+        .bind(error_message)
+        .bind(exhausted)
+        .bind(retry_at)
+        .bind(next_status)
+        .bind(queue_name)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(DatabaseError::from_sqlx)?;
+
+        if exhausted {
+            self.record_dead_letter(&delivery).await?;
+        }
+
+        let circuit = self
+            .record_circuit_failure(
+                delivery.merchant_id,
+                &delivery.webhook_url,
+                http_status,
+                DEFAULT_CIRCUIT_FAILURE_THRESHOLD,
+                DEFAULT_CIRCUIT_COOLDOWN_SECS,
+            )
+            .await?;
+
+        if let Some(opened_until) = circuit.opened_until {
+            self.pause_endpoint_retry_until(
+                delivery.merchant_id,
+                &delivery.webhook_url,
+                opened_until,
+            )
+            .await?;
+        }
+
+        Ok(delivery)
+    }
+
+    pub async fn record_dead_letter(
+        &self,
+        delivery: &WebhookDelivery,
+    ) -> Result<(), DatabaseError> {
+        sqlx::query(
+            r#"
+            INSERT INTO merchant_webhook_dead_letters (
+                webhook_delivery_id, merchant_id, webhook_url, event_type,
+                payload, last_error_message, retry_count
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (webhook_delivery_id) DO UPDATE
+                SET last_error_message = EXCLUDED.last_error_message,
+                    retry_count = EXCLUDED.retry_count
+            "#,
+        )
+        .bind(delivery.id)
+        .bind(delivery.merchant_id)
+        .bind(&delivery.webhook_url)
+        .bind(&delivery.event_type)
+        .bind(&delivery.payload)
+        .bind(delivery.error_message.as_deref())
+        .bind(delivery.retry_count)
+        .execute(&self.pool)
+        .await
+        .map_err(DatabaseError::from_sqlx)?;
+
+        Ok(())
+    }
+
+    pub async fn active_circuit_for_endpoint(
+        &self,
+        merchant_id: Uuid,
+        webhook_url: &str,
+    ) -> Result<Option<WebhookEndpointCircuitBreaker>, DatabaseError> {
+        sqlx::query_as::<_, WebhookEndpointCircuitBreaker>(
+            r#"
+            SELECT *
+            FROM merchant_webhook_endpoint_circuits
+            WHERE merchant_id = $1
+              AND webhook_url = $2
+              AND state = 'open'
+              AND opened_until > NOW()
+            "#,
+        )
+        .bind(merchant_id)
+        .bind(webhook_url)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(DatabaseError::from_sqlx)
+    }
+
+    pub async fn record_circuit_success(
+        &self,
+        merchant_id: Uuid,
+        webhook_url: &str,
+    ) -> Result<(), DatabaseError> {
+        sqlx::query(
+            r#"
+            INSERT INTO merchant_webhook_endpoint_circuits (
+                merchant_id, webhook_url, state, consecutive_failures, last_success_at
+            )
+            VALUES ($1, $2, 'closed', 0, NOW())
+            ON CONFLICT (merchant_id, webhook_url) DO UPDATE
+            SET state = 'closed',
+                consecutive_failures = 0,
+                opened_until = NULL,
+                last_success_at = NOW()
+            "#,
+        )
+        .bind(merchant_id)
+        .bind(webhook_url)
+        .execute(&self.pool)
+        .await
+        .map_err(DatabaseError::from_sqlx)?;
+
+        Ok(())
+    }
+
+    async fn record_circuit_failure(
+        &self,
+        merchant_id: Uuid,
+        webhook_url: &str,
+        http_status: Option<i32>,
+        failure_threshold: i32,
+        cooldown_secs: i64,
+    ) -> Result<WebhookEndpointCircuitBreaker, DatabaseError> {
+        let current = sqlx::query_as::<_, WebhookEndpointCircuitBreaker>(
+            r#"
+            SELECT *
+            FROM merchant_webhook_endpoint_circuits
+            WHERE merchant_id = $1 AND webhook_url = $2
+            "#,
+        )
+        .bind(merchant_id)
+        .bind(webhook_url)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(DatabaseError::from_sqlx)?;
+
+        let next_failures = if is_circuit_breaker_failure(http_status) {
+            current
+                .as_ref()
+                .map(|circuit| circuit.consecutive_failures + 1)
+                .unwrap_or(1)
+        } else {
+            0
+        };
+        let decision = circuit_decision_after_failure(
+            Utc::now(),
+            next_failures,
+            http_status,
+            failure_threshold,
+            cooldown_secs,
+        );
+        let (state, opened_until) = match decision {
+            CircuitDecision::Closed => ("closed", None),
+            CircuitDecision::OpenUntil(until) => ("open", Some(until)),
+        };
+
+        sqlx::query_as::<_, WebhookEndpointCircuitBreaker>(
+            r#"
+            INSERT INTO merchant_webhook_endpoint_circuits (
+                merchant_id, webhook_url, state, consecutive_failures,
+                opened_until, last_failure_at
+            )
+            VALUES ($1, $2, $3, $4, $5, NOW())
+            ON CONFLICT (merchant_id, webhook_url) DO UPDATE
+            SET state = EXCLUDED.state,
+                consecutive_failures = EXCLUDED.consecutive_failures,
+                opened_until = EXCLUDED.opened_until,
+                last_failure_at = NOW()
+            RETURNING *
+            "#,
+        )
+        .bind(merchant_id)
+        .bind(webhook_url)
+        .bind(state)
+        .bind(next_failures)
+        .bind(opened_until)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(DatabaseError::from_sqlx)
+    }
+
+    pub async fn pause_endpoint_retry_until(
+        &self,
+        merchant_id: Uuid,
+        webhook_url: &str,
+        opened_until: DateTime<Utc>,
+    ) -> Result<(), DatabaseError> {
+        sqlx::query(
+            r#"
+            UPDATE merchant_webhook_deliveries
+            SET next_retry_at = GREATEST(COALESCE(next_retry_at, $3), $3),
+                status = CASE WHEN status = 'pending' THEN 'retrying' ELSE status END,
+                queue_name = CASE WHEN queue_name = 'primary' THEN 'retry' ELSE queue_name END
+            WHERE merchant_id = $1
+              AND webhook_url = $2
+              AND status IN ('pending', 'retrying')
+            "#,
+        )
+        .bind(merchant_id)
+        .bind(webhook_url)
+        .bind(opened_until)
+        .execute(&self.pool)
+        .await
+        .map_err(DatabaseError::from_sqlx)?;
+
+        Ok(())
+    }
+
     pub async fn find_pending_for_retry(
         &self,
         limit: i64,
@@ -434,7 +701,7 @@ impl WebhookDeliveryRepository {
         sqlx::query_as::<_, WebhookDelivery>(
             r#"
             SELECT * FROM merchant_webhook_deliveries
-            WHERE status = 'pending'
+            WHERE status IN ('pending', 'retrying')
               AND (next_retry_at IS NULL OR next_retry_at <= NOW())
               AND retry_count < 5
             ORDER BY created_at ASC

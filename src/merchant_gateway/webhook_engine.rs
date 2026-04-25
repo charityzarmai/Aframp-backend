@@ -3,6 +3,7 @@
 
 use crate::merchant_gateway::models::*;
 use crate::merchant_gateway::repository::WebhookDeliveryRepository;
+use crate::merchant_gateway::webhook_queue::{webhook_idempotency_key, worker_pool_size};
 use chrono::Utc;
 use hmac::{Hmac, Mac};
 use reqwest::Client;
@@ -11,6 +12,7 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
+use tokio::sync::Semaphore;
 use tokio::time::interval;
 use tracing::{error, info, instrument, warn};
 use uuid::Uuid;
@@ -26,6 +28,7 @@ pub struct WebhookEngine {
     http_client: Client,
     max_retries: u32,
     timeout_secs: u64,
+    delivery_worker_id: String,
 }
 
 impl WebhookEngine {
@@ -45,6 +48,7 @@ impl WebhookEngine {
             http_client,
             max_retries: 5,
             timeout_secs,
+            delivery_worker_id: format!("webhook-worker-{}", Uuid::new_v4()),
         }
     }
 
@@ -84,7 +88,10 @@ impl WebhookEngine {
         // Generate HMAC signature
         let signature = self.generate_signature(&merchant.webhook_secret, &payload_json)?;
 
-        // Queue webhook delivery
+        let idempotency_key = webhook_idempotency_key(merchant.id, payment_intent.id, event_type);
+
+        // Queue webhook delivery. The worker pool handles actual network I/O,
+        // so callers can return immediately after this durable write.
         let webhook_delivery = self
             .webhook_repo
             .create(
@@ -94,6 +101,7 @@ impl WebhookEngine {
                 event_type,
                 payload_json,
                 &signature,
+                &idempotency_key,
             )
             .await
             .map_err(|e| format!("Failed to queue webhook: {}", e))?;
@@ -103,17 +111,9 @@ impl WebhookEngine {
             payment_intent_id = %payment_intent.id,
             merchant_id = %merchant.id,
             event_type = %event_type,
+            idempotency_key = %webhook_delivery.idempotency_key,
             "Webhook queued for delivery"
         );
-
-        // Trigger immediate delivery attempt (async)
-        let engine = self.clone_for_delivery();
-        let webhook_id = webhook_delivery.id;
-        tokio::spawn(async move {
-            if let Err(e) = engine.deliver_webhook(webhook_id).await {
-                warn!(webhook_id = %webhook_id, error = %e, "Initial webhook delivery failed");
-            }
-        });
 
         Ok(webhook_delivery.id)
     }
@@ -129,13 +129,49 @@ impl WebhookEngine {
             .map_err(|e| format!("Failed to fetch webhook: {}", e))?
             .ok_or_else(|| "Webhook not found".to_string())?;
 
-        if webhook.status == WebhookStatus::Delivered {
+        if matches!(
+            webhook.status,
+            WebhookStatus::Delivered | WebhookStatus::DeadLettered | WebhookStatus::Abandoned
+        ) {
             return Ok(()); // Already delivered
         }
 
         if webhook.retry_count >= self.max_retries as i32 {
-            warn!(webhook_id = %webhook_id, "Webhook abandoned after max retries");
+            self.webhook_repo
+                .record_delivery_failure(
+                    &webhook,
+                    None,
+                    "Max retries exceeded before delivery attempt",
+                    self.max_retries,
+                )
+                .await
+                .map_err(|e| format!("Failed to dead-letter webhook: {}", e))?;
             return Err("Max retries exceeded".to_string());
+        }
+
+        if let Some(circuit) = self
+            .webhook_repo
+            .active_circuit_for_endpoint(webhook.merchant_id, &webhook.webhook_url)
+            .await
+            .map_err(|e| format!("Failed to read webhook circuit breaker: {}", e))?
+        {
+            if let Some(opened_until) = circuit.opened_until {
+                self.webhook_repo
+                    .pause_endpoint_retry_until(
+                        webhook.merchant_id,
+                        &webhook.webhook_url,
+                        opened_until,
+                    )
+                    .await
+                    .map_err(|e| format!("Failed to pause webhook delivery: {}", e))?;
+                warn!(
+                    webhook_id = %webhook_id,
+                    merchant_id = %webhook.merchant_id,
+                    opened_until = %opened_until,
+                    "Webhook endpoint circuit is open; delivery paused"
+                );
+                return Ok(());
+            }
         }
 
         // Prepare HTTP request
@@ -150,6 +186,7 @@ impl WebhookEngine {
             .header("X-Webhook-Event", &webhook.event_type)
             .header("X-Webhook-Id", webhook_id.to_string())
             .header("X-Webhook-Timestamp", Utc::now().to_rfc3339())
+            .header("x-aframp-idempotency-key", &webhook.idempotency_key)
             .body(payload_str)
             .send()
             .await;
@@ -168,6 +205,10 @@ impl WebhookEngine {
                         .mark_delivered(webhook_id, status.as_u16() as i32, Some(&response_body))
                         .await
                         .map_err(|e| format!("Failed to mark webhook delivered: {}", e))?;
+                    self.webhook_repo
+                        .record_circuit_success(webhook.merchant_id, &webhook.webhook_url)
+                        .await
+                        .map_err(|e| format!("Failed to close webhook circuit: {}", e))?;
 
                     info!(
                         webhook_id = %webhook_id,
@@ -179,7 +220,12 @@ impl WebhookEngine {
                     // HTTP error - schedule retry
                     let error_msg = format!("HTTP {}: {}", status.as_u16(), response_body);
                     self.webhook_repo
-                        .mark_failed(webhook_id, Some(status.as_u16() as i32), &error_msg)
+                        .record_delivery_failure(
+                            &webhook,
+                            Some(status.as_u16() as i32),
+                            &error_msg,
+                            self.max_retries,
+                        )
                         .await
                         .map_err(|e| format!("Failed to mark webhook failed: {}", e))?;
 
@@ -196,7 +242,7 @@ impl WebhookEngine {
                 // Network error - schedule retry
                 let error_msg = format!("Network error: {}", e);
                 self.webhook_repo
-                    .mark_failed(webhook_id, None, &error_msg)
+                    .record_delivery_failure(&webhook, None, &error_msg, self.max_retries)
                     .await
                     .map_err(|e| format!("Failed to mark webhook failed: {}", e))?;
 
@@ -251,35 +297,8 @@ impl WebhookEngine {
             http_client: self.http_client.clone(),
             max_retries: self.max_retries,
             timeout_secs: self.timeout_secs,
+            delivery_worker_id: self.delivery_worker_id.clone(),
         }
-    }
-}
-
-// Extension trait for repository
-trait WebhookRepositoryExt {
-    async fn find_by_id(&self, id: Uuid) -> Result<Option<WebhookDelivery>, crate::database::error::DatabaseError>;
-}
-
-impl WebhookRepositoryExt for WebhookDeliveryRepository {
-    async fn find_by_id(&self, id: Uuid) -> Result<Option<WebhookDelivery>, crate::database::error::DatabaseError> {
-        sqlx::query_as::<_, WebhookDelivery>(
-            "SELECT * FROM merchant_webhook_deliveries WHERE id = $1"
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(crate::database::error::DatabaseError::from_sqlx)
-    }
-}
-
-// Access to pool
-trait RepositoryPool {
-    fn pool(&self) -> &PgPool;
-}
-
-impl RepositoryPool for WebhookDeliveryRepository {
-    fn pool(&self) -> &PgPool {
-        &self.pool
     }
 }
 
@@ -292,6 +311,7 @@ pub struct WebhookRetryWorker {
     webhook_engine: Arc<WebhookEngine>,
     poll_interval_secs: u64,
     batch_size: i64,
+    max_concurrency: usize,
 }
 
 impl WebhookRetryWorker {
@@ -305,12 +325,17 @@ impl WebhookRetryWorker {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(50);
+        let max_concurrency = std::env::var("WEBHOOK_WORKER_CONCURRENCY")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(16);
 
         Self {
             webhook_repo: Arc::new(WebhookDeliveryRepository::new(pool)),
             webhook_engine,
             poll_interval_secs,
             batch_size,
+            max_concurrency,
         }
     }
 
@@ -318,6 +343,7 @@ impl WebhookRetryWorker {
         info!(
             poll_interval_secs = self.poll_interval_secs,
             batch_size = self.batch_size,
+            max_concurrency = self.max_concurrency,
             "Webhook retry worker started"
         );
 
@@ -354,16 +380,35 @@ impl WebhookRetryWorker {
             return Ok(());
         }
 
-        info!(count = pending.len(), "Processing pending webhooks");
+        let pool_size = worker_pool_size(pending.len(), self.max_concurrency);
+        info!(
+            count = pending.len(),
+            pool_size, "Processing queued webhooks"
+        );
+
+        let permits = Arc::new(Semaphore::new(pool_size));
+        let mut tasks = Vec::with_capacity(pending.len());
 
         for webhook in pending {
             let engine = self.webhook_engine.clone();
             let webhook_id = webhook.id;
-            tokio::spawn(async move {
+            let permit = permits
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(|e| format!("Webhook worker semaphore closed: {}", e))?;
+            tasks.push(tokio::spawn(async move {
+                let _permit = permit;
                 if let Err(e) = engine.deliver_webhook(webhook_id).await {
                     warn!(webhook_id = %webhook_id, error = %e, "Webhook retry failed");
                 }
-            });
+            }));
+        }
+
+        for task in tasks {
+            if let Err(e) = task.await {
+                warn!(error = %e, "Webhook worker task join failed");
+            }
         }
 
         Ok(())
