@@ -66,7 +66,7 @@ serde      = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0",                        optional = true }
 
 # --- Database ---
-sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid", "bigdecimal"], optional = true }
+sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid", "bigdecimal", "rust_decimal"], optional = true }
 
 # In-process L1 cache
 moka = { version = "0.12", features = ["future"], optional = true }
@@ -169,6 +169,9 @@ zeroize   = { version = "1.7", features = ["derive"], optional = true }
 
 # MaxMind GeoIP2 for IP geolocation
 maxminddb = { version = "0.24", optional = true }
+
+# Hostname for hardware signature in audit ledger
+hostname = "0.4"
 
 # ---------------------------------------------------------------------------
 # OpenTelemetry — distributed tracing (Issue #104, gated by "telemetry" feature)
@@ -322,3 +325,8 @@ required-features = ["database"]
 name = "xdr_parser"
 path = "benches/xdr_parser.rs"
 harness = false
+
+[[test]]
+name = "audit_ledger_integration"
+path = "tests/audit_ledger_integration.rs"
+required-features = ["database"]
