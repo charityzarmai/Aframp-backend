@@ -54,6 +54,9 @@ mod agent_dashboard;
 
 // Issue #337 — Merchant Dispute Resolution & Clawback Management
 mod dispute;
+
+// DeFi Integration Architecture & Protocol Selection (Issue #370)
+mod defi;
 use std::sync::Arc;
 use crate::config::AppConfig;
 use crate::health::{HealthChecker, HealthStatus};
