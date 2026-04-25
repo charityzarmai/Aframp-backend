@@ -170,6 +170,9 @@ zeroize   = { version = "1.7", features = ["derive"], optional = true }
 # MaxMind GeoIP2 for IP geolocation
 maxminddb = { version = "0.24", optional = true }
 
+# Hostname for hardware signature in audit ledger
+hostname = "0.4"
+
 # ---------------------------------------------------------------------------
 # OpenTelemetry — distributed tracing (Issue #104, gated by "telemetry" feature)
 # ---------------------------------------------------------------------------
@@ -322,3 +325,8 @@ required-features = ["database"]
 name = "xdr_parser"
 path = "benches/xdr_parser.rs"
 harness = false
+
+[[test]]
+name = "audit_ledger_integration"
+path = "tests/audit_ledger_integration.rs"
+required-features = ["database"]
