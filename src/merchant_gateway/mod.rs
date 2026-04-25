@@ -8,6 +8,7 @@ pub mod handlers;
 pub mod routes;
 pub mod webhook_engine;
 pub mod api_key_service;
+pub mod loyalty;
 pub mod metrics;
 
 #[cfg(test)]
