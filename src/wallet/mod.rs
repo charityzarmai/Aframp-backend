@@ -1,4 +1,5 @@
 pub mod models;
+pub mod limits;
 pub mod repository;
 pub mod handlers;
 pub mod routes;
@@ -9,4 +10,5 @@ pub mod history;
 pub mod metrics;
 
 pub use models::*;
+pub use limits::*;
 pub use repository::WalletRegistryRepository;
