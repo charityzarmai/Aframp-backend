@@ -1,6 +1,7 @@
 //! HTTP handlers for Merchant Gateway API
 
 use crate::error::AppError;
+use crate::merchant_gateway::loyalty::*;
 use crate::merchant_gateway::models::*;
 use crate::merchant_gateway::service::MerchantGatewayService;
 use crate::middleware::api_key::AuthenticatedKey;
@@ -135,6 +136,99 @@ pub async fn cancel_payment_intent(
     Ok(Json(ApiResponse {
         success: true,
         data: payment_intent,
+    }))
+}
+
+/// Create a merchant loyalty cashback campaign
+/// POST /api/v1/merchant/loyalty/campaigns
+#[instrument(skip(service, auth))]
+pub async fn create_loyalty_campaign(
+    State(service): State<Arc<MerchantGatewayService>>,
+    Extension(auth): Extension<AuthenticatedKey>,
+    Json(request): Json<CreateLoyaltyCampaignRequest>,
+) -> Result<(StatusCode, Json<ApiResponse<LoyaltyCampaign>>), AppError> {
+    let merchant_id = auth.consumer_id;
+    let campaign = service
+        .create_loyalty_campaign(merchant_id, request)
+        .await?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(ApiResponse {
+            success: true,
+            data: campaign,
+        }),
+    ))
+}
+
+/// List merchant loyalty campaigns
+/// GET /api/v1/merchant/loyalty/campaigns
+#[instrument(skip(service, auth))]
+pub async fn list_loyalty_campaigns(
+    State(service): State<Arc<MerchantGatewayService>>,
+    Extension(auth): Extension<AuthenticatedKey>,
+) -> Result<Json<ApiResponse<Vec<LoyaltyCampaign>>>, AppError> {
+    let merchant_id = auth.consumer_id;
+    let campaigns = service.list_loyalty_campaigns(merchant_id).await?;
+
+    Ok(Json(ApiResponse {
+        success: true,
+        data: campaigns,
+    }))
+}
+
+/// Activate a merchant loyalty campaign
+/// POST /api/v1/merchant/loyalty/campaigns/:id/activate
+#[instrument(skip(service, auth))]
+pub async fn activate_loyalty_campaign(
+    State(service): State<Arc<MerchantGatewayService>>,
+    Extension(auth): Extension<AuthenticatedKey>,
+    Path(campaign_id): Path<Uuid>,
+) -> Result<Json<ApiResponse<LoyaltyCampaign>>, AppError> {
+    let merchant_id = auth.consumer_id;
+    let campaign = service
+        .activate_loyalty_campaign(merchant_id, campaign_id)
+        .await?;
+
+    Ok(Json(ApiResponse {
+        success: true,
+        data: campaign,
+    }))
+}
+
+/// Deactivate a merchant loyalty campaign
+/// POST /api/v1/merchant/loyalty/campaigns/:id/deactivate
+#[instrument(skip(service, auth))]
+pub async fn deactivate_loyalty_campaign(
+    State(service): State<Arc<MerchantGatewayService>>,
+    Extension(auth): Extension<AuthenticatedKey>,
+    Path(campaign_id): Path<Uuid>,
+) -> Result<Json<ApiResponse<LoyaltyCampaign>>, AppError> {
+    let merchant_id = auth.consumer_id;
+    let campaign = service
+        .deactivate_loyalty_campaign(merchant_id, campaign_id)
+        .await?;
+
+    Ok(Json(ApiResponse {
+        success: true,
+        data: campaign,
+    }))
+}
+
+/// Merchant loyalty marketing spend report
+/// GET /api/v1/merchant/loyalty/reports/spend
+#[instrument(skip(service, auth))]
+pub async fn loyalty_spend_report(
+    State(service): State<Arc<MerchantGatewayService>>,
+    Extension(auth): Extension<AuthenticatedKey>,
+    Query(query): Query<LoyaltySpendReportQuery>,
+) -> Result<Json<ApiResponse<LoyaltyMarketingSpendResponse>>, AppError> {
+    let merchant_id = auth.consumer_id;
+    let report = service.loyalty_spend_report(merchant_id, query).await?;
+
+    Ok(Json(ApiResponse {
+        success: true,
+        data: report,
     }))
 }
 
