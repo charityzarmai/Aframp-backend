@@ -19,6 +19,12 @@ pub mod service;
 pub mod treasury;
 pub mod types;
 
+// Domain 6 — DeFi & Yield Integration (Tasks 1–4)
+pub mod risk_assessment;
+pub mod position_monitoring;
+pub mod yield_distribution;
+pub mod regulatory_compliance;
+
 #[cfg(test)]
 mod tests;
 
@@ -30,6 +36,36 @@ pub use risk_controls::{RiskController, CircuitBreaker};
 pub use evaluation::{ProtocolEvaluator, EvaluationCriteria, RiskTier};
 pub use governance::{GovernanceCommittee, ApprovalWorkflow};
 pub use treasury::TreasuryManager;
+
+// Task 1 — Risk Assessment
+pub use risk_assessment::{
+    RiskAssessmentService, CompositeRiskScore, ProtocolRiskTier, RiskCategoryWeights,
+    SmartContractRiskScore, EconomicRiskScore, OperationalRiskScore, ConcentrationRiskScore,
+    ConcentrationMetrics, StressTestResult, StressTestScenario, RiskReport,
+    ProtocolAuditRecord, ProtocolEconomicMetrics, ProtocolGovernanceProposal,
+    VulnerabilityDisclosure, UnplannedUpgradeRecord,
+};
+
+// Task 2 — Position Monitoring
+pub use position_monitoring::{
+    PositionMonitoringService, PositionSnapshot, MonitoringAlert, MonitoringAlertLevel,
+    StrategyDriftStatus, RebalancingPlan, RebalancingAuditEvent, ProtocolHealthHistory,
+    ImpermanentLossRecord, DriftSeverity,
+};
+
+// Task 3 — Yield Distribution
+pub use yield_distribution::{
+    YieldDistributionEngine, YieldSourceRecord, YieldAccrualEntry, YieldTierConfig,
+    TreasuryYieldRecord, YieldReconciliationRecord, EffectiveYieldRate, YieldTaxSummary,
+    YieldSourceType, DistributionModel,
+};
+
+// Task 4 — Regulatory Compliance
+pub use regulatory_compliance::{
+    RegulatoryComplianceService, RegulatoryActivityEntry, RegulatoryReport, ComplianceDashboard,
+    ComplianceAuditEntry, RegulatoryChange, ComplianceThreshold, ThresholdUtilisation,
+    DeFiOperationType, RegulatoryCategory, ReportType, ReportFilingStatus,
+};
 
 // ── Module-level constants (all configurable via env at startup) ──────────────
 
