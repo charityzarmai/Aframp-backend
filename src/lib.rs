@@ -159,6 +159,10 @@ pub mod agent_cfo;
 // Agent Swarm Intelligence — decentralized P2P coordination layer
 #[cfg(feature = "database")]
 pub mod agent_swarm;
+
+// Performance SLA Management & Breach Response (Issue #405)
+#[cfg(feature = "database")]
+pub mod sla;
 // Agent Admin Dashboard — HITL control system for autonomous agents
 #[cfg(feature = "database")]
 pub mod agent_dashboard;

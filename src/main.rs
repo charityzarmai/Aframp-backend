@@ -57,6 +57,8 @@ mod dispute;
 
 // DeFi Integration Architecture & Protocol Selection (Issue #370)
 mod defi;
+// Performance SLA Management & Breach Response (Issue #405)
+mod sla;
 use std::sync::Arc;
 use crate::config::AppConfig;
 use crate::health::{HealthChecker, HealthStatus};
@@ -2308,14 +2310,29 @@ async fn main() -> anyhow::Result<()> {
         Router::new()
     };
 
-    let app = Router::new()
-        .route("/", get(root))
-        .route("/health", get(health))
-        .route("/health/ready", get(readiness))
-        .route("/health/live", get(liveness))
-        .route("/metrics", get(metrics::handler::metrics_handler))
-        .route("/api/stellar/account/{address}", get(get_stellar_account))
-        .route("/api/trustlines/operations", post(create_trustline_operation))
+    // ── Performance SLA Management & Breach Response (Issue #405) ────────────
+    let sla_routes = if let Some(pool) = db_pool.clone() {
+        let http = reqwest::Client::new();
+        let sla_state = std::sync::Arc::new(sla::SlaState {
+            repo: std::sync::Arc::new(sla::SlaRepository::new(pool.clone())),
+            pool: pool.clone(),
+        });
+
+        // SLA monitor worker — evaluates SLOs every 60 seconds
+        let monitor = sla::SlaMonitorWorker::new(pool.clone(), http);
+        tokio::spawn(monitor.run(worker_shutdown_rx.clone()));
+        info!("✅ SLA monitor worker started (60s interval)");
+
+        // Monthly compliance report worker
+        let report_worker = sla::SlaReportWorker::new(pool);
+        tokio::spawn(report_worker.run(worker_shutdown_rx.clone()));
+        info!("✅ SLA report worker started");
+
+        sla::sla_routes(sla_state)
+    } else {
+        info!("⏭️  Skipping SLA routes (no database)");
+        Router::new()
+    };
         .route("/api/trustlines/operations/{id}", patch(update_trustline_operation_status))
         .route("/api/trustlines/operations/wallet/{address}", get(list_trustline_operations_by_wallet))
         .route("/api/fees/calculate", post(calculate_fee))
@@ -2369,6 +2386,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(agent_dashboard_routes)
         .merge(pos_routes)
         .merge(dispute_routes)
+        .merge(sla_routes)
         .with_state(AppState {
             db_pool,
             redis_cache,
