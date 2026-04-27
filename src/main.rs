@@ -33,6 +33,7 @@ mod security_compliance;
 mod services;
 mod telemetry;
 mod workers;
+mod capacity;
 
 // Imports
 use std::sync::Arc;
