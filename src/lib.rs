@@ -24,6 +24,10 @@ pub mod database;
 #[cfg(feature = "database")]
 pub mod chains;
 
+// Partner ecosystem integrations
+#[cfg(feature = "database")]
+pub mod partner;
+
 // Error handling
 #[cfg(feature = "database")]
 pub mod error;
