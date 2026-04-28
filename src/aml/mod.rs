@@ -10,6 +10,8 @@ pub mod models;
 pub mod screening;
 pub mod risk_scoring;
 pub mod case_management;
+pub mod enhanced_case_management;
+pub mod policy_engine;
 pub mod repository;
 pub mod handlers;
 
