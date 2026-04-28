@@ -131,6 +131,7 @@ urlencoding = { version = "2.1", optional = true }
 
 # Prometheus metrics
 prometheus = { version = "0.13", features = ["process"], optional = true }
+lazy_static = "1.4"
 
 # PDF & Reporting
 typst = "0.11"
