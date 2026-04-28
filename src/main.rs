@@ -55,6 +55,9 @@ mod agent_dashboard;
 // Issue #337 — Merchant Dispute Resolution & Clawback Management
 mod dispute;
 
+// Partner Integration Framework — unified "Partner Hub" (Issue #348)
+mod partner;
+
 // DeFi Integration Architecture & Protocol Selection (Issue #370)
 mod defi;
 // Performance SLA Management & Breach Response (Issue #405)
@@ -957,6 +960,17 @@ async fn main() -> anyhow::Result<()> {
 
     // Create the application router with logging middleware
     info!("🛣️  Setting up application routes...");
+
+    // ── Partner Integration Framework (Issue #348) ────────────────────────────
+    let partner_hub_routes = if let Some(pool) = db_pool.clone() {
+        info!("✅ Partner Integration Framework started");
+        let worker = partner::DeprecationNotificationWorker::new(pool.clone());
+        tokio::spawn(worker.run());
+        partner::partner_routes(pool, audit_writer.clone())
+    } else {
+        info!("⏭️  Skipping partner hub routes (no database)");
+        Router::new()
+    };
 
     // ── LP Onboarding & Partner Portal ────────────────────────────────────────
     let lp_onboarding_routes = if let Some(pool) = db_pool.clone() {
@@ -2381,6 +2395,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(oracle_routes)
         .merge(governance_routes)
         .merge(lp_onboarding_routes)
+        .merge(partner_hub_routes)
         .merge(agent_cfo_routes)
         .merge(agent_swarm_routes)
         .merge(agent_dashboard_routes)
