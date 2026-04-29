@@ -24,6 +24,7 @@ mod lp_payout;
 mod metrics;
 mod multisig;
 mod peg_monitor;
+mod pep;
 mod middleware;
 mod mtls;
 mod oauth;
@@ -2445,6 +2446,36 @@ async fn main() -> anyhow::Result<()> {
         info!("⏭️  Skipping SLA routes (no database)");
         Router::new()
     };
+
+    // PEP Screening & Monitoring Engine — Issue #348
+    let pep_routes = if let (Some(pool), Some(cache)) = (db_pool.clone(), redis_cache.clone()) {
+        let repo = std::sync::Arc::new(pep::PepRepository::new(pool));
+        let config = pep::PepScreeningConfig {
+            provider_api_key: std::env::var("PEP_PROVIDER_API_KEY").unwrap_or_default(),
+            provider_base_url: std::env::var("PEP_PROVIDER_BASE_URL")
+                .unwrap_or_else(|_| "https://api.dowjones.com/risk-and-compliance/v1".into()),
+            ..Default::default()
+        };
+        let screening = std::sync::Arc::new(pep::PepScreeningService::new(
+            config,
+            cache,
+            repo.clone(),
+        ));
+        let monitoring = std::sync::Arc::new(pep::PepMonitoringService::new(
+            screening.clone(),
+            repo.clone(),
+        ));
+
+        // Spawn nightly re-screening worker
+        let worker = std::sync::Arc::new(pep::PepRescreeningWorker::new(monitoring));
+        pep::PepRescreeningWorker::spawn(worker);
+        info!("✅ PEP nightly re-screening worker started (24h interval)");
+
+        pep::handlers::pep_routes(pep::handlers::PepState { screening, repo })
+    } else {
+        info!("⏭️  Skipping PEP routes (no database or cache)");
+        Router::new()
+    };
         .route("/api/trustlines/operations/{id}", patch(update_trustline_operation_status))
         .route("/api/trustlines/operations/wallet/{address}", get(list_trustline_operations_by_wallet))
         .route("/api/fees/calculate", post(calculate_fee))
@@ -2500,6 +2531,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(pos_routes)
         .merge(dispute_routes)
         .merge(sla_routes)
+        .merge(pep_routes)
         .with_state(AppState {
             db_pool,
             redis_cache,
