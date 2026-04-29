@@ -19,8 +19,10 @@ mod error;
 mod health;
 mod liquidity;
 mod logging;
+mod lp_onboarding;
 mod lp_payout;
 mod metrics;
+mod multisig;
 mod peg_monitor;
 mod middleware;
 mod mtls;
@@ -28,10 +30,12 @@ mod oauth;
 mod payments;
 mod bug_bounty;
 mod pentest;
+mod pos;
 mod recurring;
 mod security_compliance;
 mod services;
 mod telemetry;
+mod wallet;
 mod workers;
 mod capacity;
 
@@ -781,6 +785,62 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Start Proof-of-Reserves (PoR) Worker — Issue #297
+    let por_enabled = std::env::var("POR_WORKER_ENABLED")
+        .unwrap_or_else(|_| "true".to_string())
+        .to_lowercase()
+        != "false";
+    if por_enabled {
+        if let (Some(pool), Some(client)) = (db_pool.clone(), stellar_client.clone()) {
+            let asset_issuer = std::env::var("CNGN_ISSUER_ADDRESS")
+                .or_else(|_| std::env::var("CNGN_ISSUER_MAINNET"))
+                .unwrap_or_default();
+
+            if asset_issuer.is_empty() {
+                warn!("CNGN_ISSUER_ADDRESS not set — skipping PoR worker");
+            } else {
+                let por_signing_key = api::transparency::load_signing_key();
+                let por_worker = workers::por_worker::ProofOfReservesWorker::new(
+                    pool,
+                    client,
+                    por_signing_key,
+                    audit_writer.clone(),
+                    asset_issuer,
+                );
+                tokio::spawn(por_worker.run(worker_shutdown_rx.clone()));
+                info!("✅ Proof-of-Reserves (PoR) worker started (60-min interval)");
+            }
+        } else {
+            info!("⏭️  Skipping PoR worker (no database or Stellar client)");
+        }
+    } else {
+        info!("PoR worker disabled (POR_WORKER_ENABLED=false)");
+    // Start Monthly Attestation Worker
+    let attestation_enabled = std::env::var("ATTESTATION_ENABLED")
+        .unwrap_or_else(|_| "true".to_string())
+        .to_lowercase() != "false";
+
+    if attestation_enabled {
+        if let Some(pool) = db_pool.clone() {
+            let transparency_key = std::env::var("TRANSPARENCY_SIGNING_KEY").ok();
+            if let Ok(trans_svc) = services::transparency::TransparencyService::new(pool.clone(), transparency_key) {
+                let trans_svc = Arc::new(trans_svc);
+                let audit_repo = Arc::new(audit::repository::AuditLogRepository::new(pool.clone()));
+                let attestation_service = Arc::new(crate::reporting::AttestationService::new(
+                    pool,
+                    trans_svc,
+                    audit_repo,
+                ));
+                let attestation_worker = workers::attestation_worker::AttestationWorker::new(
+                    attestation_service,
+                    notification_service.clone(),
+                );
+                tokio::spawn(attestation_worker.run(worker_shutdown_rx.clone()));
+                info!("✅ Monthly attestation worker started");
+            }
+        }
+    }
+
     // Initialize webhook processor and retry worker
     let webhook_routes = if let Some(pool) = db_pool.clone() {
         let webhook_repo = std::sync::Arc::new(
@@ -879,9 +939,53 @@ async fn main() -> anyhow::Result<()> {
     // Create the application router with logging middleware
     info!("🛣️  Setting up application routes...");
 
+    // ── Partner Integration Framework (Issue #348) ────────────────────────────
+    let partner_hub_routes = if let Some(pool) = db_pool.clone() {
+        info!("✅ Partner Integration Framework started");
+        let worker = partner::DeprecationNotificationWorker::new(pool.clone());
+        tokio::spawn(worker.run());
+        partner::partner_routes(pool, audit_writer.clone())
+    } else {
+        info!("⏭️  Skipping partner hub routes (no database)");
+        Router::new()
+    };
+
+    // ── LP Onboarding & Partner Portal ────────────────────────────────────────
+    let lp_onboarding_routes = if let Some(pool) = db_pool.clone() {
+        let repo = std::sync::Arc::new(lp_onboarding::LpOnboardingRepository::new(pool.clone()));
+        let svc = std::sync::Arc::new(lp_onboarding::LpOnboardingService::new(
+            repo.clone(),
+            std::env::var("DOCUSIGN_BASE_URL")
+                .unwrap_or_else(|_| "https://demo.docusign.net/restapi".into()),
+            std::env::var("DOCUSIGN_ACCOUNT_ID").unwrap_or_default(),
+            std::env::var("DOCUSIGN_ACCESS_TOKEN").unwrap_or_default(),
+        ));
+        let expiry_worker = lp_onboarding::AgreementExpiryWorker::new(repo);
+        tokio::spawn(expiry_worker.run());
+        info!("✅ LP Onboarding service started");
+        lp_onboarding::routes::partner_routes(svc.clone())
+            .merge(lp_onboarding::routes::admin_routes(svc.clone()))
+            .merge(lp_onboarding::routes::webhook_routes(svc))
+    } else {
+        info!("⏭️  Skipping LP onboarding routes (no database)");
+        Router::new()
+    };
+
+    // ── Merchant Multi-Sig & Treasury Controls (Issue #336) ──────────────────
+    let merchant_multisig_routes = if let Some(pool) = db_pool.clone() {
+        let svc = std::sync::Arc::new(merchant_multisig::MerchantMultisigService::new(
+            pool,
+            audit_writer.clone(),
+        ));
+        info!("✅ Merchant Multi-Sig routes enabled");
+        merchant_multisig::merchant_multisig_routes(svc)
+    } else {
+        info!("⏭️  Skipping merchant multisig routes (no database)");
+        Router::new()
+    };
+
     // ── LP Payout Engine (Liquidity Provider rewards) ─────────────────────────
-    let lp_payout_routes = if let (Some(pool), Some(client)) =
-        (db_pool.clone(), stellar_client.clone())
+    let lp_payout_routes = if let (Some(pool), Some(client)) =        (db_pool.clone(), stellar_client.clone())
     {
         let lp_repo = std::sync::Arc::new(lp_payout::LpPayoutRepository::new(pool.clone()));
         let lp_config = lp_payout::LpPayoutWorkerConfig::from_env();
@@ -906,6 +1010,28 @@ async fn main() -> anyhow::Result<()> {
     } else {
         info!("⏭️  Skipping LP payout routes (missing database or stellar client)");
         Router::new()
+    };
+
+    // ── Oracle Price Feed (Issue #1.02 — Sensory System) ─────────────────────
+    let oracle_routes = {
+        use oracle::{
+            adapters::{BandProtocolAdapter, BinanceAdapter, CoinbaseAdapter},
+            service::OracleService,
+        };
+
+        let pair = std::env::var("ORACLE_PAIR").unwrap_or_else(|_| "XLM/USD".to_string());
+
+        let adapters: Vec<Box<dyn oracle::adapters::PriceAdapter>> = vec![
+            Box::new(BinanceAdapter::new()),
+            Box::new(CoinbaseAdapter::new()),
+            Box::new(BandProtocolAdapter::new()),
+        ];
+
+        let svc = std::sync::Arc::new(OracleService::new(adapters, pair.clone(), db_pool.clone()));
+        // Kick off the background heartbeat loop
+        svc.clone().start();
+        info!(pair = %pair, "✅ Oracle price feed started");
+        oracle::routes::oracle_routes(svc)
     };
 
     // Setup onramp routes (quote service)
@@ -1044,6 +1170,37 @@ async fn main() -> anyhow::Result<()> {
             )
             .with_state(initiate_state)
     } else {
+        Router::new()
+    };
+
+    // Setup non-custodial wallet architecture routes (Issues #5.01, #5.02, #5.03, #5.04)
+    let noncustodial_wallet_routes = if let Some(pool) = db_pool.clone() {
+        let jwt_secret = std::env::var("JWT_SECRET").unwrap_or_default();
+        let registry = prometheus::default_registry();
+        match wallet::metrics::WalletMetrics::new(registry) {
+            Ok(metrics) => {
+                let state = std::sync::Arc::new(wallet::handlers::WalletAppState {
+                    repo: std::sync::Arc::new(wallet::repository::WalletRegistryRepository::new(pool.clone())),
+                    history_repo: std::sync::Arc::new(wallet::repository::TransactionHistoryRepository::new(pool.clone())),
+                    portfolio_repo: std::sync::Arc::new(wallet::repository::PortfolioRepository::new(pool.clone())),
+                    statement_repo: std::sync::Arc::new(wallet::repository::StatementRepository::new(pool.clone())),
+                    metrics: std::sync::Arc::new(metrics),
+                    jwt_secret,
+                    max_wallets_per_user: std::env::var("MAX_WALLETS_PER_USER").ok().and_then(|v| v.parse().ok()).unwrap_or(10),
+                    challenge_ttl_secs: 300,
+                    recovery_attack_threshold: std::env::var("RECOVERY_ATTACK_THRESHOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(10),
+                    unconfirmed_backup_alert_threshold: std::env::var("UNCONFIRMED_BACKUP_ALERT_THRESHOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(100),
+                });
+                info!("✅ Non-custodial wallet routes enabled");
+                wallet::routes::wallet_routes(state)
+            }
+            Err(e) => {
+                tracing::warn!("Wallet metrics registration failed ({}); skipping wallet routes", e);
+                Router::new()
+            }
+        }
+    } else {
+        info!("⏭️  Skipping non-custodial wallet routes (no database)");
         Router::new()
     };
 
@@ -1894,6 +2051,45 @@ async fn main() -> anyhow::Result<()> {
         info!("⏭️  Skipping OAuth routes (missing database or cache)");
         Router::new()
     };
+
+    // ── Dispute Resolution & Clawback Management (Issue #337) ────────────────
+    let dispute_routes = if let Some(pool) = db_pool.clone() {
+        let repo = std::sync::Arc::new(dispute::DisputeRepository::new(pool));
+        let svc = std::sync::Arc::new(dispute::DisputeService::new(repo.clone()));
+        // Spawn background worker to escalate overdue disputes every 5 minutes.
+        {
+            let svc_clone = svc.clone();
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(std::time::Duration::from_secs(300));
+                loop {
+                    ticker.tick().await;
+                    let _ = svc_clone.escalate_overdue_disputes().await;
+                }
+            });
+        }
+        info!("⚖️  Dispute resolution routes enabled");
+        dispute::dispute_routes().with_state(svc)
+    } else {
+        info!("⏭️  Skipping dispute routes (no database)");
+        Router::new()
+    };
+
+    // ── Multi-Sig Governance routes (Issue: Multi-Sig Governance) ────────────
+    let governance_routes = if let (Some(pool), Some(client)) =
+        (db_pool.clone(), stellar_client.clone())
+    {
+        let repo = std::sync::Arc::new(multisig::repository::MultiSigRepository::new(pool));
+        let svc = std::sync::Arc::new(multisig::MultiSigService::from_env(
+            repo,
+            std::sync::Arc::new(client),
+        ));
+        info!("🔐 Multi-sig governance routes enabled");
+        multisig::routes::governance_router(svc)
+    } else {
+        info!("⏭️  Skipping multi-sig governance routes (missing database or stellar client)");
+        Router::new()
+    };
+
     let app = Router::new()
         .route("/", get(root))
         .route("/health", get(health))
@@ -1932,6 +2128,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(onramp_routes)
         .merge(offramp_routes)
         .merge(wallet_routes)
+        .merge(noncustodial_wallet_routes)
         .merge(rates_routes)
         .merge(fees_routes)
         .merge(mint_routes)
@@ -1954,6 +2151,16 @@ async fn main() -> anyhow::Result<()> {
         api::transparency::transparency_routes(state)
     } else {
         info!("⏭️  Skipping transparency routes (no database)");
+        Router::new()
+    };
+
+    // ── Proof-of-Reserves public endpoint (Issue #297) ───────────────────────
+    let por_routes = if let Some(pool) = db_pool.clone() {
+        let state = std::sync::Arc::new(api::por::PorState { db: pool });
+        info!("🔍 Proof-of-Reserves (PoR) routes enabled");
+        api::por::por_routes(state)
+    } else {
+        info!("⏭️  Skipping PoR routes (no database)");
         Router::new()
     };
 
@@ -1990,37 +2197,142 @@ async fn main() -> anyhow::Result<()> {
         info!("⏭️  Skipping peg monitor routes (missing database or stellar client)");
         Router::new()
     };
-    let app = Router::new()
-        .route("/", get(root))
-        .route("/health", get(health))
-        .route("/health/ready", get(readiness))
-        .route("/health/live", get(liveness))
-        .route("/metrics", get(metrics::handler::metrics_handler))
-        .route("/api/stellar/account/{address}", get(get_stellar_account))
-        .route(
-            "/api/trustlines/operations",
-            post(create_trustline_operation),
-        )
-        .route(
-            "/api/trustlines/operations/{id}",
-            patch(update_trustline_operation_status),
-        )
-        .route(
-            "/api/trustlines/operations/wallet/{address}",
-            get(list_trustline_operations_by_wallet),
-        )
+
+    // ── POS QR Payment System ─────────────────────────────────────────────────
+    let pos_routes = if let (Some(pool), Some(client)) = (db_pool.clone(), stellar_client.clone()) {
+        let cngn_issuer = std::env::var("CNGN_ISSUER_ADDRESS")
+            .or_else(|_| std::env::var("CNGN_ISSUER_MAINNET"))
+            .unwrap_or_else(|_| "GXXXXDEFAULTISSUERXXXX".to_string());
+
+        let qr_generator = std::sync::Arc::new(pos::QrGenerator::new(cngn_issuer));
+        let payment_intent_service = std::sync::Arc::new(pos::payment_intent::PaymentIntentService::new(
+            pool.clone(),
+            qr_generator.clone(),
+        ));
+
+        let lobby_service = std::sync::Arc::new(pos::lobby_service::LobbyService::new(
+            pool.clone(),
+            std::sync::Arc::new(client),
+            5, // Poll interval in seconds
+        ));
+
+        // Start lobby service polling worker
+        let lobby_clone = lobby_service.clone();
+        tokio::spawn(async move {
+            lobby_clone.start_polling_worker().await;
+        });
+
+        let legacy_bridge = std::sync::Arc::new(pos::legacy_bridge::LegacyBridge::new(
+            payment_intent_service.clone(),
+        ));
+
+        let verification_secret = std::env::var("POS_VERIFICATION_SECRET")
+            .unwrap_or_else(|_| "default-secret-change-in-production".to_string());
+        let proof_of_payment = std::sync::Arc::new(pos::proof_of_payment::ProofOfPayment::new(
+            pool.clone(),
+            verification_secret,
+        ));
+
+        let pos_state = pos::handlers::PosState {
+            payment_intent_service,
+            lobby_service,
+            legacy_bridge,
+            proof_of_payment,
+        };
+
+        info!("💳 POS QR payment system routes enabled");
+        pos::routes::pos_routes(pos_state)
+    } else {
+        info!("⏭️  Skipping POS routes (missing database or stellar client)");
+        Router::new()
+    };
+    // ── Agent CFO — In-House Treasury for Autonomous Agents ─────────────────
+    let agent_cfo_routes = if let Some(pool) = db_pool.clone() {
+        let engine = std::sync::Arc::new(agent_cfo::engine::AgentCfoEngine::new(pool.clone()));
+        let ledger = engine.ledger();
+        let cfo_state = agent_cfo::handlers::CfoState {
+            engine,
+            ledger,
+            db: pool.clone(),
+        };
+        // Start burn-rate watchdog
+        let watchdog = agent_cfo::watchdog::BurnRateWatchdog::new(
+            pool,
+            agent_cfo::watchdog::WatchdogConfig::from_env(),
+        );
+        tokio::spawn(watchdog.run(worker_shutdown_rx.clone()));
+        info!("✅ Agent CFO watchdog started");
+        agent_cfo::routes::agent_cfo_routes(cfo_state)
+    } else {
+        info!("⏭️  Skipping Agent CFO routes (no database)");
+        Router::new()
+    };
+
+    // ── Agent Swarm Intelligence ──────────────────────────────────────────────
+    let agent_swarm_routes = if let Some(pool) = db_pool.clone() {
+        use agent_swarm::{
+            consensus::ConsensusEngine,
+            delegation::DelegationEngine,
+            discovery::PeerDiscovery,
+            gossip::GossipStore,
+            handlers::SwarmState,
+            settlement::SettlementEngine,
+        };
+        let swarm_state = SwarmState {
+            discovery: std::sync::Arc::new(PeerDiscovery::new(pool.clone())),
+            delegation: std::sync::Arc::new(DelegationEngine::new(pool.clone())),
+            consensus: std::sync::Arc::new(ConsensusEngine::new(pool.clone())),
+            gossip: std::sync::Arc::new(GossipStore::new(pool.clone())),
+            settlement: std::sync::Arc::new(SettlementEngine::new(pool.clone())),
+            db: pool.clone(),
+        };
+        tokio::spawn(PeerDiscovery::run_heartbeat_sweep(pool.clone(), worker_shutdown_rx.clone()));
+        tokio::spawn(GossipStore::run_eviction_worker(pool, worker_shutdown_rx.clone()));
+        info!("✅ Agent Swarm Intelligence routes enabled");
+        agent_swarm::routes::agent_swarm_routes(swarm_state)
+    } else {
+        info!("⏭️  Skipping Agent Swarm routes (no database)");
+    // ── Agent Admin Dashboard — HITL control system ───────────────────────
+    let agent_dashboard_routes = if let Some(pool) = db_pool.clone() {
+        let svc = std::sync::Arc::new(agent_dashboard::service::AgentDashboardService::new(pool));
+        info!("✅ Agent Admin Dashboard routes enabled");
+        agent_dashboard::routes::agent_dashboard_routes(svc)
+    } else {
+        info!("⏭️  Skipping Agent Dashboard routes (no database)");
+        Router::new()
+    };
+
+    // ── Performance SLA Management & Breach Response (Issue #405) ────────────
+    let sla_routes = if let Some(pool) = db_pool.clone() {
+        let http = reqwest::Client::new();
+        let sla_state = std::sync::Arc::new(sla::SlaState {
+            repo: std::sync::Arc::new(sla::SlaRepository::new(pool.clone())),
+            pool: pool.clone(),
+        });
+
+        // SLA monitor worker — evaluates SLOs every 60 seconds
+        let monitor = sla::SlaMonitorWorker::new(pool.clone(), http);
+        tokio::spawn(monitor.run(worker_shutdown_rx.clone()));
+        info!("✅ SLA monitor worker started (60s interval)");
+
+        // Monthly compliance report worker
+        let report_worker = sla::SlaReportWorker::new(pool);
+        tokio::spawn(report_worker.run(worker_shutdown_rx.clone()));
+        info!("✅ SLA report worker started");
+
+        sla::sla_routes(sla_state)
+    } else {
+        info!("⏭️  Skipping SLA routes (no database)");
+        Router::new()
+    };
+        .route("/api/trustlines/operations/{id}", patch(update_trustline_operation_status))
+        .route("/api/trustlines/operations/wallet/{address}", get(list_trustline_operations_by_wallet))
         .route("/api/fees/calculate", post(calculate_fee))
         .route("/api/cngn/trustlines/check", post(check_cngn_trustline))
-        .route(
-            "/api/cngn/trustlines/preflight",
-            post(preflight_cngn_trustline),
-        )
+        .route("/api/cngn/trustlines/preflight", post(preflight_cngn_trustline))
         .route("/api/cngn/trustlines/build", post(build_cngn_trustline))
         .route("/api/cngn/trustlines/submit", post(submit_cngn_trustline))
-        .route(
-            "/api/cngn/trustlines/retry/{id}",
-            post(retry_cngn_trustline),
-        )
+        .route("/api/cngn/trustlines/retry/{id}", post(retry_cngn_trustline))
         .route("/api/cngn/payments/build", post(build_cngn_payment))
         .route("/api/cngn/payments/sign", post(sign_cngn_payment))
         .route("/api/cngn/payments/submit", post(submit_cngn_payment))
@@ -2028,6 +2340,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(onramp_routes)
         .merge(offramp_routes)
         .merge(wallet_routes)
+        .merge(noncustodial_wallet_routes)
         .merge(rates_routes)
         .merge(fees_routes)
         .merge(mint_routes)
@@ -2050,11 +2363,23 @@ async fn main() -> anyhow::Result<()> {
         .merge(pentest_routes)
         .merge(liquidity_routes)
         .merge(transparency_routes)
+        .merge(por_routes)
         .merge(bug_bounty_routes)
         .merge(developer_portal::routes::register_developer_portal_routes(Router::new(), db_pool.clone()))
         .merge(Router::new().nest("/api/admin/security", mtls_admin_routes))
         .merge(security_compliance_routes)
         .merge(lp_payout_routes)
+        .merge(merchant_multisig_routes)
+        .merge(oracle_routes)
+        .merge(governance_routes)
+        .merge(lp_onboarding_routes)
+        .merge(partner_hub_routes)
+        .merge(agent_cfo_routes)
+        .merge(agent_swarm_routes)
+        .merge(agent_dashboard_routes)
+        .merge(pos_routes)
+        .merge(dispute_routes)
+        .merge(sla_routes)
         .with_state(AppState {
             db_pool,
             redis_cache,
