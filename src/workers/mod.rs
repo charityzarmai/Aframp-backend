@@ -20,3 +20,4 @@ pub mod supply_monitor_worker;
 pub mod liquidity_monitor_worker;
 pub mod por_worker;
 pub mod attestation_worker;
+pub mod address_book_maintenance;

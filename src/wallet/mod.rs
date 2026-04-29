@@ -9,6 +9,7 @@ pub mod backup;
 pub mod portfolio;
 pub mod history;
 pub mod metrics;
+pub mod address_book;
 
 pub use models::*;
 pub use limits::*;
