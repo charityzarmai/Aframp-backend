@@ -37,6 +37,29 @@ mod services;
 mod telemetry;
 mod wallet;
 mod workers;
+// Issue #334 — Merchant CRM & Customer Insights
+mod merchant_crm;
+// Issue #333 — Merchant Invoicing & Automated Tax Calculation
+mod merchant_invoicing;
+// Issue #336 — Merchant Multi-Sig & Treasury Controls
+mod merchant_multisig;
+// Issue #335 — Multi-Store & Franchise Management
+mod franchise;
+// Issue #322 — Wallet Creation & Stellar Account Provisioning
+mod wallet_provisioning;
+mod oracle;
+mod agent_cfo;
+mod agent_swarm;
+mod agent_dashboard;
+
+// Issue #337 — Merchant Dispute Resolution & Clawback Management
+mod dispute;
+
+// DeFi Integration Architecture & Protocol Selection (Issue #370)
+mod defi;
+
+// Issue #407 — Banking Partner Integration & Account Linkage
+mod banking;
 mod recurring;
 mod capacity;
 
@@ -1849,6 +1872,39 @@ async fn main() -> anyhow::Result<()> {
         info!("⏭️  Skipping auditor portal routes (no database)");
         Router::new()
     };
+
+    // ── Compliance Effectiveness Reporting (AML/KYC KPI Reports) ─────────────
+    let compliance_effectiveness_routes = if let Some(ref pool) = db_pool {
+        let ce_repo = std::sync::Arc::new(
+            compliance_effectiveness::ComplianceEffectivenessRepository::new(pool.clone())
+        );
+        let ce_service = std::sync::Arc::new(
+            compliance_effectiveness::ReportGenerationService::new(ce_repo.clone())
+        );
+        // Start scheduled reporting worker
+        compliance_effectiveness::ComplianceReportWorker::new(ce_service.clone(), ce_repo.clone()).start();
+        let ce_state = std::sync::Arc::new(compliance_effectiveness::ComplianceEffectivenessState {
+            service: ce_service,
+            repo: ce_repo,
+        });
+        info!("✅ Compliance effectiveness reporting routes enabled");
+        compliance_effectiveness::compliance_effectiveness_routes(ce_state)
+    } else {
+        info!("⏭️  Skipping compliance effectiveness routes (no database)");
+        Router::new()
+    };
+
+    // ── KYB (Know Your Business) — Corporate Entity Verification ─────────────
+    let kyb_routes = if let Some(ref pool) = db_pool {
+        let kyb_repo = std::sync::Arc::new(kyb::KybRepository::new(pool.clone()));
+        let kyb_orchestrator = std::sync::Arc::new(kyb::KybOrchestrator::new(kyb_repo));
+        let kyb_state = std::sync::Arc::new(kyb::KybState { orchestrator: kyb_orchestrator });
+        info!("✅ KYB routes enabled");
+        kyb::kyb_routes(kyb_state)
+    } else {
+        info!("⏭️  Skipping KYB routes (no database)");
+        Router::new()
+    };
     let (ddos_state, ddos_admin_routes) = if let Some(ref cache) = redis_cache {
         let ddos_config = ddos::config::DdosConfig::from_env();
         let state = std::sync::Arc::new(ddos::state::DdosState::new(ddos_config, cache.clone()));
@@ -2201,6 +2257,45 @@ async fn main() -> anyhow::Result<()> {
         Router::new()
     };
 
+    // ── Banking Partner Integration & Account Linkage (Issue #407) ───────────
+    let (banking_routes, banking_webhook_routes) = if let Some(pool) = db_pool.clone() {
+        let svc = std::sync::Arc::new(banking::BankingService::new(
+            pool.clone(),
+            provider_factory.clone(),
+        ));
+        let repo = std::sync::Arc::new(banking::BankingRepository::new(pool.clone()));
+        let webhook_processor = std::sync::Arc::new(banking::BankWebhookProcessor::new(repo.clone()));
+        // Spawn daily reconciliation worker at 01:00 UTC
+        {
+            let recon_engine = std::sync::Arc::new(banking::ReconciliationEngine::new(repo));
+            tokio::spawn(async move {
+                loop {
+                    let now = chrono::Utc::now();
+                    // Sleep until next 01:00 UTC
+                    let next_run = (now + chrono::Duration::days(1))
+                        .date_naive()
+                        .and_hms_opt(1, 0, 0)
+                        .map(|dt| chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(dt, chrono::Utc))
+                        .unwrap_or(now + chrono::Duration::hours(24));
+                    let sleep_secs = (next_run - now).num_seconds().max(0) as u64;
+                    tokio::time::sleep(std::time::Duration::from_secs(sleep_secs)).await;
+                    let yesterday = chrono::Utc::now().date_naive() - chrono::Duration::days(1);
+                    if let Err(e) = recon_engine.run_for_date(yesterday).await {
+                        tracing::error!(error = %e, "Banking reconciliation failed");
+                    }
+                }
+            });
+        }
+        info!("🏦 Banking integration routes enabled");
+        (
+            banking::banking_routes(svc),
+            banking::banking_webhook_routes(webhook_processor),
+        )
+    } else {
+        info!("⏭️  Skipping banking routes (no database)");
+        (Router::new(), Router::new())
+    };
+
     // ── Multi-Sig Governance routes (Issue: Multi-Sig Governance) ────────────
     let governance_routes = if let (Some(pool), Some(client)) =
         (db_pool.clone(), stellar_client.clone())
@@ -2482,6 +2577,8 @@ async fn main() -> anyhow::Result<()> {
         .merge(audit_routes)
         .merge(auditor_portal_routes)
         .merge(sar_routes)
+        .merge(compliance_effectiveness_routes)
+        .merge(kyb_routes)
         .merge(key_rotation_routes)
         .merge(analytics_routes)
         .merge(openapi_routes)
@@ -2509,6 +2606,8 @@ async fn main() -> anyhow::Result<()> {
         .merge(agent_dashboard_routes)
         .merge(pos_routes)
         .merge(dispute_routes)
+        .merge(banking_routes)
+        .merge(banking_webhook_routes)
         .merge(sla_routes)
         .with_state(AppState {
             db_pool,
@@ -2694,6 +2793,31 @@ async fn main() -> anyhow::Result<()> {
             ds,
             crate::ddos::middleware::ddos_middleware,
         ))
+    } else {
+        app
+    };
+
+    // ── Sanctions screening middleware (Issue #419) ───────────────────────────
+    // Runs on every strong-consistency transaction route.  Fail-closed: any
+    // provider error pauses the transaction rather than allowing it through.
+    let app = if let (Some(ref pool), Some(ref cache)) = (db_pool.clone(), redis_cache.clone()) {
+        let sanctions_state = crate::middleware::sanctions::SanctionsMiddlewareState {
+            screener: std::sync::Arc::new(crate::sanctions::SanctionsScreener::new(
+                crate::sanctions::ScreenerConfig {
+                    provider_url: std::env::var("SANCTIONS_PROVIDER_URL")
+                        .unwrap_or_else(|_| "https://api.complyadvantage.com".into()),
+                    api_key: std::env::var("SANCTIONS_API_KEY").unwrap_or_default(),
+                    ..Default::default()
+                },
+                std::sync::Arc::new(cache.clone()),
+            )),
+            audit_log: std::sync::Arc::new(crate::sanctions::AuditLog::new(pool.clone())),
+            bypass_svc: std::sync::Arc::new(crate::sanctions::BypassService::new(pool.clone())),
+        };
+        app.layer(axum::Extension(sanctions_state))
+            .layer(axum::middleware::from_fn(
+                crate::middleware::sanctions::sanctions_screening_middleware,
+            ))
     } else {
         app
     };

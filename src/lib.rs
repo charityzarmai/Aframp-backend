@@ -258,6 +258,9 @@ pub mod kya;
 #[cfg(feature = "database")]
 pub mod dispute;
 
+// Issue #407 — Banking Partner Integration & Account Linkage
+#[cfg(feature = "database")]
+pub mod banking;
 // Issue #379 — cNGN Collateralized Lending
 #[cfg(feature = "database")]
 pub mod collateral_lending;
