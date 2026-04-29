@@ -1,3 +1,6 @@
+pub mod compliance;
+pub mod monitoring;
+pub mod api;
 //! Partner Integration Framework — unified "Partner Hub" for banking partners,
 //! fintechs, and liquidity providers.
 //!
