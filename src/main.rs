@@ -37,31 +37,9 @@ mod services;
 mod telemetry;
 mod wallet;
 mod workers;
-// Issue #334 — Merchant CRM & Customer Insights
-mod merchant_crm;
-// Issue #333 — Merchant Invoicing & Automated Tax Calculation
-mod merchant_invoicing;
-// Issue #336 — Merchant Multi-Sig & Treasury Controls
-mod merchant_multisig;
-// Issue #335 — Multi-Store & Franchise Management
-mod franchise;
-// Issue #322 — Wallet Creation & Stellar Account Provisioning
-mod wallet_provisioning;
-mod oracle;
-mod agent_cfo;
-mod agent_swarm;
-mod agent_dashboard;
+mod capacity;
 
-// Issue #337 — Merchant Dispute Resolution & Clawback Management
-mod dispute;
-
-// Partner Integration Framework — unified "Partner Hub" (Issue #348)
-mod partner;
-
-// DeFi Integration Architecture & Protocol Selection (Issue #370)
-mod defi;
-// Performance SLA Management & Breach Response (Issue #405)
-mod sla;
+// Imports
 use std::sync::Arc;
 use crate::config::AppConfig;
 use crate::health::{HealthChecker, HealthStatus};
