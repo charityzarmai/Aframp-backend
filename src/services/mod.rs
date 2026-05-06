@@ -28,6 +28,14 @@ pub mod key_rotation;
 pub mod notification;
 pub mod mint_queue;
 #[cfg(feature = "database")]
+pub mod mint_approval;
+#[cfg(feature = "database")]
+pub mod mint_sla;
+#[cfg(feature = "database")]
+pub mod mint_sla_notifier;
+#[cfg(feature = "database")]
+pub mod mint_timebound_guard;
+#[cfg(feature = "database")]
 pub mod onramp_quote;
 #[cfg(feature = "database")]
 pub mod reserve_gatekeeper;
@@ -40,8 +48,14 @@ pub mod transaction;
 #[cfg(feature = "database")]
 pub mod trustline_operation;
 pub mod webhook_processor;
+pub mod notification;
+#[cfg(feature = "database")]
+pub mod analytics;
+#[cfg(feature = "database")]
+pub mod partner;
 #[cfg(feature = "database")]
 pub mod reconciliation;
+pub mod transparency;
 
 // Re-export blockchain traits for convenience
 #[cfg(feature = "database")]
