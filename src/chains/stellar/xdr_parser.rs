@@ -25,7 +25,7 @@
 //! Callers call `pool.acquire()` → fill the buffer → parse → release.
 
 use std::fmt;
-use zerocopy::{byteorder::big_endian as BE, FromBytes, Immutable, KnownLayout};
+use zerocopy::{byteorder::big_endian as BE, FromBytes, KnownLayout};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Error type
@@ -67,7 +67,7 @@ impl std::error::Error for XdrParseError {}
 
 /// First 4 bytes of any XDR envelope: the union discriminant.
 /// Layout: `[discriminant: u32 BE]`
-#[derive(FromBytes, KnownLayout, Immutable)]
+#[derive(FromBytes, KnownLayout)]
 #[repr(C)]
 pub struct RawXdrDiscriminant {
     pub value: BE::U32,
@@ -87,7 +87,7 @@ pub struct RawXdrDiscriminant {
 ///     52     4  preconditions type    (0 = PRECOND_NONE, 1 = PRECOND_TIME, …)
 /// ```
 /// Total: 56 bytes.  Variable-length fields (memo, operations, ext) follow.
-#[derive(FromBytes, KnownLayout, Immutable)]
+#[derive(FromBytes, KnownLayout)]
 #[repr(C)]
 pub struct RawTxV1Header {
     pub envelope_type:    BE::U32,   //  4 bytes — must be 0x00000002

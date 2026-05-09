@@ -62,7 +62,6 @@ mod defi;
 
 // Issue #407 — Banking Partner Integration & Account Linkage
 mod banking;
-mod recurring;
 mod capacity;
 
 // Imports

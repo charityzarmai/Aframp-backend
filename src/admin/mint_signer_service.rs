@@ -281,6 +281,23 @@ impl MintSignerService {
             .filter(|&d| d >= 0)
             .min()
     }
+
+    pub async fn repo_list_all(&self) -> Result<Vec<MintSigner>, String> {
+        self.repo.list_all().await.map_err(|e| e.to_string())
+    }
+
+    pub async fn repo_find_by_id(&self, id: uuid::Uuid) -> Result<Option<MintSigner>, String> {
+        self.repo.find_by_id(id).await.map_err(|e| e.to_string())
+    }
+
+    pub async fn repo_list_activity(
+        &self,
+        id: uuid::Uuid,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<MintSignerActivity>, String> {
+        self.repo.list_activity(id, limit, offset).await.map_err(|e| e.to_string())
+    }
 }
 
 // â”€â”€ Private helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -329,16 +346,6 @@ impl SignerExt for MintSigner {
         // Return Some(far future) so the service-level check passes â€” the DB already
         // filtered by token validity.
         Some(Utc::now() + Duration::hours(1))
-    }
-    // ── Repo pass-throughs for handlers ──────────────────────────────────────
-    pub async fn repo_list_all(&self) -> Result<Vec<MintSigner>, String> {
-        self.repo.list_all().await.map_err(|e| e.to_string())
-    }
-    pub async fn repo_find_by_id(&self, id: uuid::Uuid) -> Result<Option<MintSigner>, String> {
-        self.repo.find_by_id(id).await.map_err(|e| e.to_string())
-    }
-    pub async fn repo_list_activity(&self, id: uuid::Uuid, limit: i64, offset: i64) -> Result<Vec<MintSignerActivity>, String> {
-        self.repo.list_activity(id, limit, offset).await.map_err(|e| e.to_string())
     }
 }
 

@@ -43,8 +43,7 @@ CREATE TABLE IF NOT EXISTS scope_approvals (
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     
     -- Constraints
-    CONSTRAINT scope_approvals_status_check CHECK (status IN ('pending', 'approved', 'rejected')),
-    CONSTRAINT scope_approvals_unique_pending UNIQUE (client_id, scope_name) WHERE status = 'pending'
+    CONSTRAINT scope_approvals_status_check CHECK (status IN ('pending', 'approved', 'rejected'))
 );
 
 -- Indexes for efficient queries
@@ -55,6 +54,9 @@ CREATE INDEX idx_scope_approvals_client_id ON scope_approvals(client_id);
 CREATE INDEX idx_scope_approvals_scope_name ON scope_approvals(scope_name);
 CREATE INDEX idx_scope_approvals_requested_at ON scope_approvals(requested_at DESC);
 CREATE INDEX idx_scope_approvals_client_scope ON scope_approvals(client_id, scope_name);
+CREATE UNIQUE INDEX idx_scope_approvals_unique_pending
+    ON scope_approvals(client_id, scope_name)
+    WHERE status = 'pending';
 
 -- Comments for documentation
 COMMENT ON TABLE oauth_scopes IS 'OAuth 2.0 scope definitions with metadata';
