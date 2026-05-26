@@ -11,7 +11,7 @@ use sqlx::FromRow;
 use uuid::Uuid;
 
 use super::error::{DatabaseError, DatabaseErrorKind, DbResult};
-use crate::database::Repository;
+use sqlx::PgPool;
 
 // ── Token registry entity ────────────────────────────────────────────────────
 
@@ -45,11 +45,11 @@ pub struct CreateTokenRegistryRequest {
 // ── Token registry repository ────────────────────────────────────────────────
 
 pub struct TokenRegistryRepository {
-    db: Repository,
+    db: PgPool,
 }
 
 impl TokenRegistryRepository {
-    pub fn new(db: Repository) -> Self {
+    pub fn new(db: PgPool) -> Self {
         Self { db }
     }
 
@@ -80,7 +80,7 @@ impl TokenRegistryRepository {
         .bind::<Option<DateTime<Utc>>>(None)
         .bind(now)
         .bind(now)
-        .fetch_one(self.db.pool())
+        .fetch_one(&self.db)
         .await
         .map_err(DatabaseError::from_sqlx)?;
 
@@ -93,7 +93,7 @@ impl TokenRegistryRepository {
             "SELECT * FROM token_registry WHERE jti = $1",
         )
         .bind(jti)
-        .fetch_optional(self.db.pool())
+        .fetch_optional(&self.db)
         .await
         .map_err(DatabaseError::from_sqlx)?;
 
@@ -106,7 +106,7 @@ impl TokenRegistryRepository {
             "SELECT * FROM token_registry WHERE id = $1",
         )
         .bind(id)
-        .fetch_optional(self.db.pool())
+        .fetch_optional(&self.db)
         .await
         .map_err(DatabaseError::from_sqlx)?;
 
@@ -131,7 +131,7 @@ impl TokenRegistryRepository {
         .bind(consumer_id)
         .bind(limit)
         .bind(offset)
-        .fetch_all(self.db.pool())
+        .fetch_all(&self.db)
         .await
         .map_err(DatabaseError::from_sqlx)?;
 
@@ -149,7 +149,7 @@ impl TokenRegistryRepository {
             "#,
         )
         .bind(consumer_id)
-        .fetch_one(self.db.pool())
+        .fetch_one(&self.db)
         .await
         .map_err(DatabaseError::from_sqlx)?;
 
@@ -170,7 +170,7 @@ impl TokenRegistryRepository {
         .bind(now)
         .bind(now)
         .bind(jti)
-        .execute(self.db.pool())
+        .execute(&self.db)
         .await
         .map_err(DatabaseError::from_sqlx)?;
 
@@ -183,7 +183,7 @@ impl TokenRegistryRepository {
             "SELECT revoked FROM token_registry WHERE jti = $1",
         )
         .bind(jti)
-        .fetch_optional(self.db.pool())
+        .fetch_optional(&self.db)
         .await
         .map_err(DatabaseError::from_sqlx)?;
 
@@ -204,7 +204,7 @@ impl TokenRegistryRepository {
         .bind(now)
         .bind(now)
         .bind(consumer_id)
-        .execute(self.db.pool())
+        .execute(&self.db)
         .await
         .map_err(DatabaseError::from_sqlx)?;
 
@@ -217,7 +217,7 @@ impl TokenRegistryRepository {
             "DELETE FROM token_registry WHERE expires_at < $1",
         )
         .bind(before)
-        .execute(self.db.pool())
+        .execute(&self.db)
         .await
         .map_err(DatabaseError::from_sqlx)?;
 
@@ -236,7 +236,7 @@ impl TokenRegistryRepository {
             FROM token_registry
             "#,
         )
-        .fetch_one(self.db.pool())
+        .fetch_one(&self.db)
         .await
         .map_err(DatabaseError::from_sqlx)?;
 

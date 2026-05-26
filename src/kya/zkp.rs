@@ -210,16 +210,15 @@ pub mod proof_utils {
         
         // Public inputs: code hash only
         let public_inputs = code_hash.to_vec();
-        
-        let proof_gen = CompetenceProof::new(sqlx::PgPool::connect("").await.unwrap());
-        let proof = proof_gen.generate_proof(
-            agent_did,
-            &domain,
-            &claim,
-            private_data,
-            &public_inputs,
-        )?;
-        
+
+        let mut hasher = Sha256::new();
+        hasher.update(agent_did.to_string().as_bytes());
+        hasher.update(domain.as_str().as_bytes());
+        hasher.update(claim.as_bytes());
+        hasher.update(private_data);
+        hasher.update(&public_inputs);
+        let proof = hasher.finalize().to_vec();
+
         Ok((proof, public_inputs))
     }
 
@@ -237,16 +236,15 @@ pub mod proof_utils {
         
         // Public inputs: result hash
         let public_inputs = result_hash.to_vec();
-        
-        let proof_gen = CompetenceProof::new(sqlx::PgPool::connect("").await.unwrap());
-        let proof = proof_gen.generate_proof(
-            agent_did,
-            &domain,
-            &claim,
-            private_data,
-            &public_inputs,
-        )?;
-        
+
+        let mut hasher = Sha256::new();
+        hasher.update(agent_did.to_string().as_bytes());
+        hasher.update(domain.as_str().as_bytes());
+        hasher.update(claim.as_bytes());
+        hasher.update(private_data);
+        hasher.update(&public_inputs);
+        let proof = hasher.finalize().to_vec();
+
         Ok((proof, public_inputs))
     }
 }

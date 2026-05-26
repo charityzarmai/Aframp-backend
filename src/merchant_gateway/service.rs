@@ -1,7 +1,7 @@
 //! Business logic for Merchant Gateway
 
 use crate::chains::stellar::client::StellarClient;
-use crate::error::AppError;
+use crate::error::Error;
 use crate::merchant_gateway::loyalty::*;
 use crate::merchant_gateway::models::*;
 use crate::merchant_gateway::repository::*;
@@ -50,7 +50,7 @@ impl MerchantGatewayService {
         &self,
         merchant_id: Uuid,
         request: CreatePaymentIntentRequest,
-    ) -> Result<PaymentIntentResponse, AppError> {
+    ) -> Result<PaymentIntentResponse, Error> {
         let start = std::time::Instant::now();
 
         // Validate merchant
@@ -58,15 +58,15 @@ impl MerchantGatewayService {
             .merchant_repo
             .find_by_id(merchant_id)
             .await
-            .map_err(|e| AppError::DatabaseError(e.to_string()))?
-            .ok_or_else(|| AppError::NotFound("Merchant not found".to_string()))?;
+            .map_err(|e| Error::Database(e.to_string()))?
+            .ok_or_else(|| Error::NotFound("Merchant not found".to_string()))?;
 
         if !merchant.is_active {
-            return Err(AppError::BadRequest("Merchant is not active".to_string()));
+            return Err(Error::BadRequest("Merchant is not active".to_string()));
         }
 
         if merchant.kyb_status != "approved" {
-            return Err(AppError::BadRequest(
+            return Err(Error::BadRequest(
                 "Merchant KYB not approved".to_string(),
             ));
         }
@@ -76,7 +76,7 @@ impl MerchantGatewayService {
             .payment_intent_repo
             .find_by_merchant_reference(merchant_id, &request.merchant_reference)
             .await
-            .map_err(|e| AppError::DatabaseError(e.to_string()))?
+            .map_err(|e| Error::Database(e.to_string()))?
         {
             info!(
                 payment_intent_id = %existing.id,
@@ -88,7 +88,7 @@ impl MerchantGatewayService {
 
         // Validate amount
         if request.amount_cngn <= Decimal::ZERO {
-            return Err(AppError::BadRequest("Amount must be positive".to_string()));
+            return Err(Error::BadRequest("Amount must be positive".to_string()));
         }
 
         // Generate unique memo
@@ -116,7 +116,7 @@ impl MerchantGatewayService {
                 request.metadata.unwrap_or_else(|| serde_json::json!({})),
             )
             .await
-            .map_err(|e| AppError::DatabaseError(e.to_string()))?;
+            .map_err(|e| Error::Database(e.to_string()))?;
 
         let elapsed = start.elapsed();
         info!(
@@ -145,17 +145,17 @@ impl MerchantGatewayService {
         &self,
         merchant_id: Uuid,
         payment_intent_id: Uuid,
-    ) -> Result<MerchantPaymentIntent, AppError> {
+    ) -> Result<MerchantPaymentIntent, Error> {
         let payment_intent = self
             .payment_intent_repo
             .find_by_id(payment_intent_id)
             .await
-            .map_err(|e| AppError::DatabaseError(e.to_string()))?
-            .ok_or_else(|| AppError::NotFound("Payment intent not found".to_string()))?;
+            .map_err(|e| Error::Database(e.to_string()))?
+            .ok_or_else(|| Error::NotFound("Payment intent not found".to_string()))?;
 
         // Authorization check
         if payment_intent.merchant_id != merchant_id {
-            return Err(AppError::Forbidden(
+            return Err(Error::Forbidden(
                 "Not authorized to access this payment intent".to_string(),
             ));
         }
@@ -169,13 +169,13 @@ impl MerchantGatewayService {
         &self,
         merchant_id: Uuid,
         payment_intent_id: Uuid,
-    ) -> Result<MerchantPaymentIntent, AppError> {
+    ) -> Result<MerchantPaymentIntent, Error> {
         let payment_intent = self
             .get_payment_intent(merchant_id, payment_intent_id)
             .await?;
 
         if payment_intent.status != PaymentIntentStatus::Pending {
-            return Err(AppError::BadRequest(
+            return Err(Error::BadRequest(
                 "Can only cancel pending payment intents".to_string(),
             ));
         }
@@ -184,7 +184,7 @@ impl MerchantGatewayService {
             .payment_intent_repo
             .cancel(payment_intent_id)
             .await
-            .map_err(|e| AppError::DatabaseError(e.to_string()))?;
+            .map_err(|e| Error::Database(e.to_string()))?;
 
         info!(
             payment_intent_id = %payment_intent_id,
@@ -214,15 +214,15 @@ impl MerchantGatewayService {
         stellar_tx_hash: &str,
         amount: Decimal,
         sender_address: &str,
-    ) -> Result<(), AppError> {
+    ) -> Result<(), Error> {
         // Find payment intent by memo
         let payment_intent = self
             .payment_intent_repo
             .find_by_memo(memo)
             .await
-            .map_err(|e| AppError::DatabaseError(e.to_string()))?
+            .map_err(|e| Error::Database(e.to_string()))?
             .ok_or_else(|| {
-                AppError::NotFound(format!("No payment intent found for memo: {}", memo))
+                Error::NotFound(format!("No payment intent found for memo: {}", memo))
             })?;
 
         // Idempotency: already paid
@@ -242,7 +242,7 @@ impl MerchantGatewayService {
                 memo = %memo,
                 "Payment received for expired intent"
             );
-            return Err(AppError::BadRequest(
+            return Err(Error::BadRequest(
                 "Payment intent has expired".to_string(),
             ));
         }
@@ -255,7 +255,7 @@ impl MerchantGatewayService {
                 received = %amount,
                 "Underpayment detected"
             );
-            return Err(AppError::BadRequest(
+            return Err(Error::BadRequest(
                 "Insufficient payment amount".to_string(),
             ));
         }
@@ -270,7 +270,7 @@ impl MerchantGatewayService {
                 Some(sender_address),
             )
             .await
-            .map_err(|e| AppError::DatabaseError(e.to_string()))?;
+            .map_err(|e| Error::Database(e.to_string()))?;
 
         info!(
             payment_intent_id = %payment_intent.id,
@@ -316,12 +316,12 @@ impl MerchantGatewayService {
     /// Mark payment as confirmed (after blockchain confirmations)
     /// Target: <5 seconds from blockchain confirmation
     #[instrument(skip(self))]
-    pub async fn mark_payment_confirmed(&self, payment_intent_id: Uuid) -> Result<(), AppError> {
+    pub async fn mark_payment_confirmed(&self, payment_intent_id: Uuid) -> Result<(), Error> {
         let payment_intent = self
             .payment_intent_repo
             .mark_confirmed(payment_intent_id)
             .await
-            .map_err(|e| AppError::DatabaseError(e.to_string()))?;
+            .map_err(|e| Error::Database(e.to_string()))?;
 
         info!(
             payment_intent_id = %payment_intent_id,
@@ -338,11 +338,11 @@ impl MerchantGatewayService {
         merchant_id: Uuid,
         limit: i64,
         offset: i64,
-    ) -> Result<Vec<MerchantPaymentIntent>, AppError> {
+    ) -> Result<Vec<MerchantPaymentIntent>, Error> {
         self.payment_intent_repo
             .list_by_merchant(merchant_id, limit, offset)
             .await
-            .map_err(|e| AppError::DatabaseError(e.to_string()))
+            .map_err(|e| Error::Database(e.to_string()))
     }
 
     /// Create a merchant cashback campaign in draft state.
@@ -351,35 +351,35 @@ impl MerchantGatewayService {
         &self,
         merchant_id: Uuid,
         request: CreateLoyaltyCampaignRequest,
-    ) -> Result<LoyaltyCampaign, AppError> {
-        validate_campaign_request(&request).map_err(AppError::BadRequest)?;
+    ) -> Result<LoyaltyCampaign, Error> {
+        validate_campaign_request(&request).map_err(Error::BadRequest)?;
 
         let merchant = self
             .merchant_repo
             .find_by_id(merchant_id)
             .await
-            .map_err(|e| AppError::DatabaseError(e.to_string()))?
-            .ok_or_else(|| AppError::NotFound("Merchant not found".to_string()))?;
+            .map_err(|e| Error::Database(e.to_string()))?
+            .ok_or_else(|| Error::NotFound("Merchant not found".to_string()))?;
 
         if !merchant.is_active {
-            return Err(AppError::BadRequest("Merchant is not active".to_string()));
+            return Err(Error::BadRequest("Merchant is not active".to_string()));
         }
 
         self.loyalty_repo
             .create_campaign(merchant_id, request)
             .await
-            .map_err(|e| AppError::DatabaseError(e.to_string()))
+            .map_err(|e| Error::Database(e.to_string()))
     }
 
     #[instrument(skip(self))]
     pub async fn list_loyalty_campaigns(
         &self,
         merchant_id: Uuid,
-    ) -> Result<Vec<LoyaltyCampaign>, AppError> {
+    ) -> Result<Vec<LoyaltyCampaign>, Error> {
         self.loyalty_repo
             .list_campaigns(merchant_id)
             .await
-            .map_err(|e| AppError::DatabaseError(e.to_string()))
+            .map_err(|e| Error::Database(e.to_string()))
     }
 
     #[instrument(skip(self))]
@@ -387,11 +387,11 @@ impl MerchantGatewayService {
         &self,
         merchant_id: Uuid,
         campaign_id: Uuid,
-    ) -> Result<LoyaltyCampaign, AppError> {
+    ) -> Result<LoyaltyCampaign, Error> {
         self.loyalty_repo
             .set_campaign_status(merchant_id, campaign_id, LoyaltyCampaignStatus::Active)
             .await
-            .map_err(|e| AppError::DatabaseError(e.to_string()))
+            .map_err(|e| Error::Database(e.to_string()))
     }
 
     #[instrument(skip(self))]
@@ -399,11 +399,11 @@ impl MerchantGatewayService {
         &self,
         merchant_id: Uuid,
         campaign_id: Uuid,
-    ) -> Result<LoyaltyCampaign, AppError> {
+    ) -> Result<LoyaltyCampaign, Error> {
         self.loyalty_repo
             .set_campaign_status(merchant_id, campaign_id, LoyaltyCampaignStatus::Deactivated)
             .await
-            .map_err(|e| AppError::DatabaseError(e.to_string()))
+            .map_err(|e| Error::Database(e.to_string()))
     }
 
     #[instrument(skip(self, query))]
@@ -411,11 +411,11 @@ impl MerchantGatewayService {
         &self,
         merchant_id: Uuid,
         query: LoyaltySpendReportQuery,
-    ) -> Result<LoyaltyMarketingSpendResponse, AppError> {
+    ) -> Result<LoyaltyMarketingSpendResponse, Error> {
         self.loyalty_repo
             .spend_report(merchant_id, query)
             .await
-            .map_err(|e| AppError::DatabaseError(e.to_string()))
+            .map_err(|e| Error::Database(e.to_string()))
     }
 
     // ========================================================================
@@ -425,7 +425,7 @@ impl MerchantGatewayService {
     async fn execute_loyalty_rewards_for_payment(
         &self,
         payment_intent: &MerchantPaymentIntent,
-    ) -> Result<Vec<LoyaltyRewardExecution>, AppError> {
+    ) -> Result<Vec<LoyaltyRewardExecution>, Error> {
         let Some(customer_address) = payment_intent.customer_address.as_deref() else {
             return Ok(Vec::new());
         };
@@ -434,14 +434,14 @@ impl MerchantGatewayService {
             .merchant_repo
             .find_by_id(payment_intent.merchant_id)
             .await
-            .map_err(|e| AppError::DatabaseError(e.to_string()))?
-            .ok_or_else(|| AppError::NotFound("Merchant not found".to_string()))?;
+            .map_err(|e| Error::Database(e.to_string()))?
+            .ok_or_else(|| Error::NotFound("Merchant not found".to_string()))?;
 
         let campaigns = self
             .loyalty_repo
             .active_campaigns_for_payment(payment_intent.merchant_id, payment_intent.amount_cngn)
             .await
-            .map_err(|e| AppError::DatabaseError(e.to_string()))?;
+            .map_err(|e| Error::Database(e.to_string()))?;
 
         if campaigns.is_empty() {
             return Ok(Vec::new());
@@ -484,12 +484,12 @@ impl MerchantGatewayService {
             .loyalty_repo
             .reward_count_since(payment_intent.merchant_id, customer_address, last_hour)
             .await
-            .map_err(|e| AppError::DatabaseError(e.to_string()))?;
+            .map_err(|e| Error::Database(e.to_string()))?;
         let reward_count_today = self
             .loyalty_repo
             .reward_count_since(payment_intent.merchant_id, customer_address, last_day)
             .await
-            .map_err(|e| AppError::DatabaseError(e.to_string()))?;
+            .map_err(|e| Error::Database(e.to_string()))?;
 
         let risk = assess_loyalty_risk(
             customer_address,
@@ -511,7 +511,7 @@ impl MerchantGatewayService {
                     last_day,
                 )
                 .await
-                .map_err(|e| AppError::DatabaseError(e.to_string()))?;
+                .map_err(|e| Error::Database(e.to_string()))?;
             let mut config = LoyaltyRuleConfig::from(&campaign);
             config.per_customer_daily_remaining_cngn = campaign
                 .per_customer_daily_cap_cngn
@@ -552,7 +552,7 @@ impl MerchantGatewayService {
                     stellar_source_account,
                 )
                 .await
-                .map_err(|e| AppError::DatabaseError(e.to_string()))?
+                .map_err(|e| Error::Database(e.to_string()))?
             else {
                 warn!(
                     campaign_id = %campaign.id,
@@ -570,7 +570,7 @@ impl MerchantGatewayService {
             self.loyalty_repo
                 .queue_reward_notification(&reward, event_type)
                 .await
-                .map_err(|e| AppError::DatabaseError(e.to_string()))?;
+                .map_err(|e| Error::Database(e.to_string()))?;
 
             if reward.status == LoyaltyRewardStatus::Queued {
                 match self.dispatch_loyalty_reward_payout(&reward).await {
@@ -587,7 +587,7 @@ impl MerchantGatewayService {
                             .loyalty_repo
                             .mark_reward_failed(reward.id, "stellar_payout_failed")
                             .await
-                            .map_err(|e| AppError::DatabaseError(e.to_string()))?;
+                            .map_err(|e| Error::Database(e.to_string()))?;
                     }
                 }
             }
@@ -609,7 +609,7 @@ impl MerchantGatewayService {
     async fn dispatch_loyalty_reward_payout(
         &self,
         reward: &LoyaltyReward,
-    ) -> Result<Option<LoyaltyReward>, AppError> {
+    ) -> Result<Option<LoyaltyReward>, Error> {
         let env_source = std::env::var("LOYALTY_REWARD_SOURCE_ADDRESS").ok();
         let Some(source_address) = reward
             .stellar_source_account
@@ -665,15 +665,15 @@ impl MerchantGatewayService {
             .mark_reward_submitted(reward.id, &tx_hash)
             .await
             .map(Some)
-            .map_err(|e| AppError::DatabaseError(e.to_string()))
+            .map_err(|e| Error::Database(e.to_string()))
     }
 
-    async fn generate_unique_memo(&self) -> Result<String, AppError> {
+    async fn generate_unique_memo(&self) -> Result<String, Error> {
         // Use database function for atomic uniqueness
         let memo: (String,) = sqlx::query_as("SELECT generate_payment_memo()")
             .fetch_one(self.payment_intent_repo.pool())
             .await
-            .map_err(|e| AppError::DatabaseError(e.to_string()))?;
+            .map_err(|e| Error::Database(e.to_string()))?;
         Ok(memo.0)
     }
 

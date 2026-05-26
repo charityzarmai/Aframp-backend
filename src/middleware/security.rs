@@ -11,9 +11,9 @@ use axum::{
 use tracing::{debug, info};
 
 /// Security headers middleware function
-pub async fn security_headers_middleware<B>(
-    request: Request<B>,
-    next: Next<B>,
+pub async fn security_headers_middleware(
+    request: Request<Body>,
+    next: Next,
 ) -> Response<Body> {
     let mut response = next.run(request).await;
     

@@ -1443,6 +1443,37 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    // ── Mint approval workflow routes ────────────────────────────────────────
+    let mint_routes = if let Some(pool) = db_pool.clone() {
+        use api::mint::handlers::{
+            approve_mint_request, get_mint_audit, get_mint_request, list_mint_requests,
+            reject_mint_request, submit_mint_request, MintState,
+        };
+        use database::mint_request_repository::MintRequestRepository;
+        use middleware::rbac::{extract_identity, require_any_mint_role};
+        use services::mint_approval::MintApprovalService;
+
+        let repo = std::sync::Arc::new(MintRequestRepository::new(pool));
+        let service = std::sync::Arc::new(MintApprovalService::new(repo));
+        let mint_state = std::sync::Arc::new(MintState { service });
+
+        Router::new()
+            .route(
+                "/api/mint/requests",
+                post(submit_mint_request).get(list_mint_requests),
+            )
+            .route("/api/mint/requests/{id}", get(get_mint_request))
+            .route("/api/mint/requests/{id}/approve", post(approve_mint_request))
+            .route("/api/mint/requests/{id}/reject", post(reject_mint_request))
+            .route("/api/mint/requests/{id}/audit", get(get_mint_audit))
+            .route_layer(axum::middleware::from_fn(require_any_mint_role()))
+            .route_layer(axum::middleware::from_fn(extract_identity))
+            .with_state(mint_state)
+    } else {
+        info!("⏭️  Skipping mint routes (no database)");
+        Router::new()
+    };
+
     // ── Recurring payment routes (Issue #122) ────────────────────────────────
     let recurring_routes = if let Some(pool) = db_pool.clone() {
         let failure_threshold = std::env::var("RECURRING_FAILURE_THRESHOLD")
@@ -1943,7 +1974,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // ── Consumer usage analytics worker ──────────────────────────────────────
-    let analytics_routes = if let Some(pool) = db_pool.clone() {
+    let usage_analytics_routes = if let Some(pool) = db_pool.clone() {
         let analytics_config = analytics::worker::AnalyticsWorkerConfig::default();
         let analytics_worker = analytics::worker::AnalyticsWorker::new(
             std::sync::Arc::new(pool.clone()),
@@ -1951,12 +1982,11 @@ async fn main() -> anyhow::Result<()> {
         );
         tokio::spawn(analytics_worker.run(worker_shutdown_rx.clone()));
         info!("✅ Analytics worker started");
-        
-        // Create analytics routes
-        let analytics_repo = std::sync::Arc::new(analytics::repository::AnalyticsRepository::new(pool));
+
+        let analytics_repo =
+            std::sync::Arc::new(analytics::repository::AnalyticsRepository::new(pool));
         Router::new()
-            .nest("/api/developer", analytics::routes::consumer_analytics_routes())
-            .nest("/api/admin/analytics", analytics::routes::admin_analytics_routes())
+            .nest("/api/developer", analytics::routes::analytics_routes())
             .with_state(analytics_repo)
     } else {
         info!("Skipping analytics worker (no database)");
@@ -2093,32 +2123,6 @@ async fn main() -> anyhow::Result<()> {
         Router::new()
     };
 
-    // Setup transaction history routes
-    let history_routes = if let Some(pool) = db_pool.clone() {
-        let history_state = std::sync::Arc::new(api::transaction_history::TransactionHistoryState {
-            pool: std::sync::Arc::new(pool),
-            cache: redis_cache.clone().map(std::sync::Arc::new),
-    // ── Public Transparency / Proof-of-Reserves API ───────────────────────────
-    let transparency_routes = if let Some(pool) = db_pool.clone() {
-        let transparency_key = std::env::var("TRANSPARENCY_SIGNING_KEY").ok();
-        match services::transparency::TransparencyService::new(pool, transparency_key) {
-            Ok(svc) => {
-                info!("🔍 Transparency (Proof-of-Reserves) API enabled");
-                let state = std::sync::Arc::new(api::transparency::TransparencyState {
-                    service: std::sync::Arc::new(svc),
-                });
-                api::transparency::transparency_routes(state)
-            }
-            Err(e) => {
-                tracing::warn!("⏭️  Skipping transparency routes: {}", e);
-                Router::new()
-            }
-        }
-    } else {
-        info!("⏭️  Skipping transparency routes (no database)");
-        Router::new()
-    };
-
     // ── Pentest & Security Review Framework ──────────────────────────────────
     let pentest_routes = if let Some(pool) = db_pool.clone() {
         let repo = std::sync::Arc::new(pentest::PentestRepository::new(pool));
@@ -2177,6 +2181,9 @@ async fn main() -> anyhow::Result<()> {
             .merge(liquidity::routes::admin_routes(liq_state))
     } else {
         info!("⏭️  Skipping liquidity routes (missing database or cache)");
+        Router::new()
+    };
+
     // ── Bug Bounty Programme ──────────────────────────────────────────────────
     let bug_bounty_routes = if let Some(pool) = db_pool.clone() {
         let repo = std::sync::Arc::new(bug_bounty::BugBountyRepository::new(pool));
@@ -2313,59 +2320,7 @@ async fn main() -> anyhow::Result<()> {
         Router::new()
     };
 
-    let app = Router::new()
-        .route("/", get(root))
-        .route("/health", get(health))
-        .route("/health/ready", get(readiness))
-        .route("/health/live", get(liveness))
-        .route("/metrics", get(metrics::handler::metrics_handler))
-        .route("/api/stellar/account/{address}", get(get_stellar_account))
-        .route(
-            "/api/trustlines/operations",
-            post(create_trustline_operation),
-        )
-        .route(
-            "/api/trustlines/operations/{id}",
-            patch(update_trustline_operation_status),
-        )
-        .route(
-            "/api/trustlines/operations/wallet/{address}",
-            get(list_trustline_operations_by_wallet),
-        )
-        .route("/api/fees/calculate", post(calculate_fee))
-        .route("/api/cngn/trustlines/check", post(check_cngn_trustline))
-        .route(
-            "/api/cngn/trustlines/preflight",
-            post(preflight_cngn_trustline),
-        )
-        .route("/api/cngn/trustlines/build", post(build_cngn_trustline))
-        .route("/api/cngn/trustlines/submit", post(submit_cngn_trustline))
-        .route(
-            "/api/cngn/trustlines/retry/{id}",
-            post(retry_cngn_trustline),
-        )
-        .route("/api/cngn/payments/build", post(build_cngn_payment))
-        .route("/api/cngn/payments/sign", post(sign_cngn_payment))
-        .route("/api/cngn/payments/submit", post(submit_cngn_payment))
-        .route("/api/payments/initiate", post(initiate_payment))
-        .merge(onramp_routes)
-        .merge(offramp_routes)
-        .merge(wallet_routes)
-        .merge(noncustodial_wallet_routes)
-        .merge(rates_routes)
-        .merge(fees_routes)
-        .merge(mint_routes)
-        .merge(webhook_routes)
-        .merge(history_routes)
-        .merge(auth_routes)
-        .merge(batch_routes)
-        .merge(admin_routes)
-        .merge(adaptive_rl_admin_routes)
-        .merge(openapi_routes)
-        .merge(analytics_routes)
-        .merge(partner_routes)
-        .merge(recurring_routes)
-    // ── Transparency Portal (Issue #239) ─────────────────────────────────────
+    // ── Public Transparency / Proof-of-Reserves API ───────────────────────────
     let transparency_routes = if let Some(pool) = db_pool.clone() {
         let signing_key = api::transparency::load_signing_key();
         let state = std::sync::Arc::new(api::transparency::TransparencyState {
@@ -2517,6 +2472,9 @@ async fn main() -> anyhow::Result<()> {
         agent_swarm::routes::agent_swarm_routes(swarm_state)
     } else {
         info!("⏭️  Skipping Agent Swarm routes (no database)");
+        Router::new()
+    };
+
     // ── Agent Admin Dashboard — HITL control system ───────────────────────
     let agent_dashboard_routes = if let Some(pool) = db_pool.clone() {
         let svc = std::sync::Arc::new(agent_dashboard::service::AgentDashboardService::new(pool));
@@ -2580,14 +2538,38 @@ async fn main() -> anyhow::Result<()> {
         info!("⏭️  Skipping PEP routes (no database or cache)");
         Router::new()
     };
-        .route("/api/trustlines/operations/{id}", patch(update_trustline_operation_status))
-        .route("/api/trustlines/operations/wallet/{address}", get(list_trustline_operations_by_wallet))
+
+    let app = Router::new()
+        .route("/", get(root))
+        .route("/health", get(health))
+        .route("/health/ready", get(readiness))
+        .route("/health/live", get(liveness))
+        .route("/metrics", get(metrics::handler::metrics_handler))
+        .route("/api/stellar/account/{address}", get(get_stellar_account))
+        .route(
+            "/api/trustlines/operations",
+            post(create_trustline_operation),
+        )
+        .route(
+            "/api/trustlines/operations/{id}",
+            patch(update_trustline_operation_status),
+        )
+        .route(
+            "/api/trustlines/operations/wallet/{address}",
+            get(list_trustline_operations_by_wallet),
+        )
         .route("/api/fees/calculate", post(calculate_fee))
         .route("/api/cngn/trustlines/check", post(check_cngn_trustline))
-        .route("/api/cngn/trustlines/preflight", post(preflight_cngn_trustline))
+        .route(
+            "/api/cngn/trustlines/preflight",
+            post(preflight_cngn_trustline),
+        )
         .route("/api/cngn/trustlines/build", post(build_cngn_trustline))
         .route("/api/cngn/trustlines/submit", post(submit_cngn_trustline))
-        .route("/api/cngn/trustlines/retry/{id}", post(retry_cngn_trustline))
+        .route(
+            "/api/cngn/trustlines/retry/{id}",
+            post(retry_cngn_trustline),
+        )
         .route("/api/cngn/payments/build", post(build_cngn_payment))
         .route("/api/cngn/payments/sign", post(sign_cngn_payment))
         .route("/api/cngn/payments/submit", post(submit_cngn_payment))
@@ -2612,6 +2594,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(kyb_routes)
         .merge(key_rotation_routes)
         .merge(analytics_routes)
+        .merge(usage_analytics_routes)
         .merge(openapi_routes)
         .merge(recurring_routes)
         .merge(developer_routes)
@@ -2623,7 +2606,10 @@ async fn main() -> anyhow::Result<()> {
         .merge(transparency_routes)
         .merge(por_routes)
         .merge(bug_bounty_routes)
-        .merge(developer_portal::routes::register_developer_portal_routes(Router::new(), db_pool.clone()))
+        .merge(developer_portal::routes::register_developer_portal_routes(
+            Router::new(),
+            db_pool.clone(),
+        ))
         .merge(Router::new().nest("/api/admin/security", mtls_admin_routes))
         .merge(security_compliance_routes)
         .merge(lp_payout_routes)
@@ -2632,6 +2618,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(governance_routes)
         .merge(lp_onboarding_routes)
         .merge(partner_hub_routes)
+        .merge(partner_routes)
         .merge(agent_cfo_routes)
         .merge(agent_swarm_routes)
         .merge(agent_dashboard_routes)
@@ -2648,7 +2635,6 @@ async fn main() -> anyhow::Result<()> {
             health_checker,
             warming_state: Some(warming_state),
             shard_router: None, // populated below if DB is available
-        })
         });
 
     // Apply middleware conditionally based on available services

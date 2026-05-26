@@ -746,3 +746,13 @@ impl AnalyticsRepository {
 
     }
 }
+
+/// Map API period labels to PostgreSQL `date_trunc` units.
+fn period_trunc(period: &str) -> &'static str {
+    match period {
+        "daily" => "day",
+        "weekly" => "week",
+        "monthly" => "month",
+        _ => "day",
+    }
+}

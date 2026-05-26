@@ -104,10 +104,10 @@ impl CorsConfig {
 }
 
 /// CORS middleware function
-pub async fn cors_middleware<B>(
+pub async fn cors_middleware(
     State(config): State<CorsConfig>,
-    request: Request<B>,
-    next: Next<B>,
+    request: Request<Body>,
+    next: Next,
 ) -> Response<Body> {
     // Get origin from request headers
     let origin = request

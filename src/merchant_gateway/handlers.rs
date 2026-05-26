@@ -1,6 +1,6 @@
 //! HTTP handlers for Merchant Gateway API
 
-use crate::error::AppError;
+use crate::error::Error;
 use crate::merchant_gateway::loyalty::*;
 use crate::merchant_gateway::models::*;
 use crate::merchant_gateway::service::MerchantGatewayService;
@@ -61,7 +61,7 @@ pub async fn create_payment_intent(
     State(service): State<Arc<MerchantGatewayService>>,
     Extension(auth): Extension<AuthenticatedKey>,
     Json(request): Json<CreatePaymentIntentRequest>,
-) -> Result<Json<ApiResponse<PaymentIntentResponse>>, AppError> {
+) -> Result<Json<ApiResponse<PaymentIntentResponse>>, Error> {
     // Extract merchant_id from authenticated API key
     let merchant_id = auth.consumer_id; // Assuming consumer_id is merchant_id
 
@@ -86,7 +86,7 @@ pub async fn get_payment_intent(
     State(service): State<Arc<MerchantGatewayService>>,
     Extension(auth): Extension<AuthenticatedKey>,
     Path(payment_intent_id): Path<Uuid>,
-) -> Result<Json<ApiResponse<MerchantPaymentIntent>>, AppError> {
+) -> Result<Json<ApiResponse<MerchantPaymentIntent>>, Error> {
     let merchant_id = auth.consumer_id;
 
     let payment_intent = service
@@ -106,7 +106,7 @@ pub async fn list_payment_intents(
     State(service): State<Arc<MerchantGatewayService>>,
     Extension(auth): Extension<AuthenticatedKey>,
     Query(pagination): Query<PaginationQuery>,
-) -> Result<Json<ApiResponse<Vec<MerchantPaymentIntent>>>, AppError> {
+) -> Result<Json<ApiResponse<Vec<MerchantPaymentIntent>>>, Error> {
     let merchant_id = auth.consumer_id;
 
     let payment_intents = service
@@ -126,7 +126,7 @@ pub async fn cancel_payment_intent(
     State(service): State<Arc<MerchantGatewayService>>,
     Extension(auth): Extension<AuthenticatedKey>,
     Path(payment_intent_id): Path<Uuid>,
-) -> Result<Json<ApiResponse<MerchantPaymentIntent>>, AppError> {
+) -> Result<Json<ApiResponse<MerchantPaymentIntent>>, Error> {
     let merchant_id = auth.consumer_id;
 
     let payment_intent = service
@@ -146,7 +146,7 @@ pub async fn create_loyalty_campaign(
     State(service): State<Arc<MerchantGatewayService>>,
     Extension(auth): Extension<AuthenticatedKey>,
     Json(request): Json<CreateLoyaltyCampaignRequest>,
-) -> Result<(StatusCode, Json<ApiResponse<LoyaltyCampaign>>), AppError> {
+) -> Result<(StatusCode, Json<ApiResponse<LoyaltyCampaign>>), Error> {
     let merchant_id = auth.consumer_id;
     let campaign = service
         .create_loyalty_campaign(merchant_id, request)
@@ -167,7 +167,7 @@ pub async fn create_loyalty_campaign(
 pub async fn list_loyalty_campaigns(
     State(service): State<Arc<MerchantGatewayService>>,
     Extension(auth): Extension<AuthenticatedKey>,
-) -> Result<Json<ApiResponse<Vec<LoyaltyCampaign>>>, AppError> {
+) -> Result<Json<ApiResponse<Vec<LoyaltyCampaign>>>, Error> {
     let merchant_id = auth.consumer_id;
     let campaigns = service.list_loyalty_campaigns(merchant_id).await?;
 
@@ -184,7 +184,7 @@ pub async fn activate_loyalty_campaign(
     State(service): State<Arc<MerchantGatewayService>>,
     Extension(auth): Extension<AuthenticatedKey>,
     Path(campaign_id): Path<Uuid>,
-) -> Result<Json<ApiResponse<LoyaltyCampaign>>, AppError> {
+) -> Result<Json<ApiResponse<LoyaltyCampaign>>, Error> {
     let merchant_id = auth.consumer_id;
     let campaign = service
         .activate_loyalty_campaign(merchant_id, campaign_id)
@@ -203,7 +203,7 @@ pub async fn deactivate_loyalty_campaign(
     State(service): State<Arc<MerchantGatewayService>>,
     Extension(auth): Extension<AuthenticatedKey>,
     Path(campaign_id): Path<Uuid>,
-) -> Result<Json<ApiResponse<LoyaltyCampaign>>, AppError> {
+) -> Result<Json<ApiResponse<LoyaltyCampaign>>, Error> {
     let merchant_id = auth.consumer_id;
     let campaign = service
         .deactivate_loyalty_campaign(merchant_id, campaign_id)
@@ -222,7 +222,7 @@ pub async fn loyalty_spend_report(
     State(service): State<Arc<MerchantGatewayService>>,
     Extension(auth): Extension<AuthenticatedKey>,
     Query(query): Query<LoyaltySpendReportQuery>,
-) -> Result<Json<ApiResponse<LoyaltyMarketingSpendResponse>>, AppError> {
+) -> Result<Json<ApiResponse<LoyaltyMarketingSpendResponse>>, Error> {
     let merchant_id = auth.consumer_id;
     let report = service.loyalty_spend_report(merchant_id, query).await?;
 
@@ -248,7 +248,7 @@ pub struct VerifyWebhookResponse {
 
 pub async fn verify_webhook_signature(
     Json(request): Json<VerifyWebhookRequest>,
-) -> Result<Json<ApiResponse<VerifyWebhookResponse>>, AppError> {
+) -> Result<Json<ApiResponse<VerifyWebhookResponse>>, Error> {
     let valid = crate::merchant_gateway::webhook_engine::WebhookEngine::verify_signature(
         &request.webhook_secret,
         &request.payload,
@@ -260,36 +260,4 @@ pub async fn verify_webhook_signature(
         success: true,
         data: VerifyWebhookResponse { valid },
     }))
-}
-
-// ============================================================================
-// ERROR HANDLING
-// ============================================================================
-
-impl IntoResponse for AppError {
-    fn into_response(self) -> Response {
-        let (status, code, message) = match self {
-            AppError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg),
-            AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg),
-            AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, "FORBIDDEN", msg),
-            AppError::DatabaseError(msg) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, "DATABASE_ERROR", msg)
-            }
-            _ => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "INTERNAL_ERROR",
-                "An internal error occurred".to_string(),
-            ),
-        };
-
-        let body = Json(ApiError {
-            success: false,
-            error: ErrorDetail {
-                code: code.to_string(),
-                message,
-            },
-        });
-
-        (status, body).into_response()
-    }
 }

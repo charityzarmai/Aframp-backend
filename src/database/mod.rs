@@ -26,6 +26,7 @@ pub mod trustline_repository;
 pub mod wallet_repository;
 pub mod webhook_repository;
 pub mod analytics_repository;
+pub mod mint_request_repository;
 pub mod partner_repository;
 pub mod shard;
 pub mod saga;
