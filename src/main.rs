@@ -62,6 +62,10 @@ mod defi;
 
 // Issue #407 — Banking Partner Integration & Account Linkage
 mod banking;
+
+// Issue #499 — CBDC Interoperability & Sandbox Integration
+mod cbdc;
+
 mod capacity;
 
 // Imports
@@ -2304,6 +2308,64 @@ async fn main() -> anyhow::Result<()> {
         (Router::new(), Router::new())
     };
 
+    // ── CBDC Interoperability & Sandbox Bridge (Issue #499) ─────────────────
+    let (cbdc_routes, cbdc_admin_route, cbdc_worker_handle) = if let (Some(pool), Some(redis)) =
+        (db_pool.clone(), redis_cache.clone())
+    {
+        use cbdc::*;
+
+        let repo = std::sync::Arc::new(CbdcRepository::new(pool.clone()));
+        let config = CbdcWorkerConfig::from_env();
+        let hsm_config = hsm::HsmClientConfig::default();
+        let hsm_client = std::sync::Arc::new(hsm::HsmClient::new(hsm_config));
+        let validator = std::sync::Arc::new(SwapValidator::new());
+        let gateway_pool = std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new()));
+
+        let two_pc = std::sync::Arc::new(TwoPhaseCommitManager::new(
+            repo.clone(),
+            redis.pool.clone(),
+            &config,
+        ));
+
+        let settlement_worker = std::sync::Arc::new(SettlementWorker::new(
+            repo.clone(),
+            two_pc.clone(),
+            validator.clone(),
+            gateway_pool.clone(),
+            config.clone(),
+        ));
+
+        let reversal_engine = std::sync::Arc::new(ReversalEngine::new(
+            repo.clone(),
+            config.clone(),
+        ));
+
+        // Spawn settlement worker
+        let settlement_shutdown_rx = worker_shutdown_rx.clone();
+        let settlement_handle = tokio::spawn(async move {
+            settlement_worker.run(settlement_shutdown_rx).await;
+        });
+
+        // Spawn reversal engine
+        let reversal_shutdown_rx = worker_shutdown_rx.clone();
+        let reversal_handle = tokio::spawn(async move {
+            reversal_engine.run(reversal_shutdown_rx).await;
+        });
+
+        info!("✅ CBDC Interoperability workers started (settlement + reversal)");
+
+        let handler_state = std::sync::Arc::new(CbdcHandlerState::new(repo));
+
+        (
+            cbdc_api_routes(handler_state.clone()),
+            cbdc_admin_routes(handler_state),
+            Some((settlement_handle, reversal_handle)),
+        )
+    } else {
+        info!("⏭️  Skipping CBDC routes (missing database or redis)");
+        (Router::new(), Router::new(), None)
+    };
+
     // ── Multi-Sig Governance routes (Issue: Multi-Sig Governance) ────────────
     let governance_routes = if let (Some(pool), Some(client)) =
         (db_pool.clone(), stellar_client.clone())
@@ -2626,6 +2688,8 @@ async fn main() -> anyhow::Result<()> {
         .merge(dispute_routes)
         .merge(banking_routes)
         .merge(banking_webhook_routes)
+        .merge(cbdc_routes)
+        .merge(cbdc_admin_route)
         .merge(sla_routes)
         .merge(pep_routes)
         .with_state(AppState {
@@ -2927,6 +2991,15 @@ async fn main() -> anyhow::Result<()> {
     if let Some(handle) = mint_expiry_handle {
         if let Err(e) = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await {
             error!(error = %e, "Timed out waiting for mint expiry worker shutdown");
+        }
+    }
+
+    if let Some((settlement_handle, reversal_handle)) = cbdc_worker_handle {
+        if let Err(e) = tokio::time::timeout(std::time::Duration::from_secs(5), settlement_handle).await {
+            error!(error = %e, "Timed out waiting for CBDC settlement worker shutdown");
+        }
+        if let Err(e) = tokio::time::timeout(std::time::Duration::from_secs(5), reversal_handle).await {
+            error!(error = %e, "Timed out waiting for CBDC reversal engine shutdown");
         }
     }
 

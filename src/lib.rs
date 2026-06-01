@@ -270,6 +270,10 @@ pub mod event_bus;
 #[cfg(feature = "database")]
 pub mod travel_rule;
 
+// Issue #499 — CBDC Interoperability & Sandbox Integration
+#[cfg(feature = "database")]
+pub mod cbdc;
+
 // Contract error enum for Soroban (only when not using database feature)
 #[cfg(not(feature = "database"))]
 #[contracterror]
