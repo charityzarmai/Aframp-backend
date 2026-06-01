@@ -164,6 +164,10 @@ pub mod agent_swarm;
 // Performance SLA Management & Breach Response (Issue #405)
 #[cfg(feature = "database")]
 pub mod sla;
+
+// Performance Profiling & Monitoring (Issue: Performance Profiling)
+#[cfg(feature = "database")]
+pub mod profiling;
 // Agent Admin Dashboard — HITL control system for autonomous agents
 #[cfg(feature = "database")]
 pub mod agent_dashboard;
