@@ -398,6 +398,11 @@ name = "audit_ledger_integration"
 path = "tests/audit_ledger_integration.rs"
 required-features = ["database"]
 
+# Issue #475 — Partner Compliance & Due Diligence
+[[test]]
+name = "partner_compliance_integration"
+path = "tests/partner_compliance_integration.rs"
+
 [[test]]
 name = "rate_limit_test"
 path = "tests/rate_limit_test.rs"
