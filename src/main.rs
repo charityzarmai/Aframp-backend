@@ -471,6 +471,13 @@ async fn main() -> anyhow::Result<()> {
         };
 
     // ── InvalidationPipeline — centralises write-through deletes ─────────────
+    // ── InvalidationPipeline — centralises write-through cache deletes ────────
+    // Currently injected into:
+    //   • ExchangeRateRepository (exchange-rate writes → v1:rate:* invalidation)
+    // Prepared (method exists, no server-managed write path yet):
+    //   • WalletRepository::with_pipeline() — WalletRepository::update_balance
+    //     is not called via any main.rs-managed path today; wallet balance cache
+    //     invalidation will be wired here when that write path is introduced.
     let shared_invalidation_pipeline: Option<std::sync::Arc<cache::InvalidationPipeline>> =
         if let (Some(ref redis), Some(ref pool)) = (&redis_cache, &db_pool) {
             Some(cache::InvalidationPipeline::new(

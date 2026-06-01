@@ -526,6 +526,7 @@ mod performance_tests {
     use std::time::Instant;
 
     #[tokio::test]
+    #[ignore = "requires live Redis on 127.0.0.1:6379"]
     async fn benchmark_cache_operations() -> Result<(), anyhow::Error> {
         let client = Client::open("redis://127.0.0.1:6379")?;
         let manager = client.get_connection_manager().await?;

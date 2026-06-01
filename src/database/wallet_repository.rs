@@ -59,7 +59,10 @@ impl WalletRepository {
         self.cache = Some(cache);
     }
 
-    /// Attach a centralized invalidation pipeline (replaces inline deletes).
+    /// Attach a centralized invalidation pipeline (replaces inline deletes on write).
+    /// Wire this in main.rs when wallet balance writes are served from a
+    /// main.rs-managed WalletRepository instance. Currently prepared but not
+    /// yet injected because update_balance has no server-managed call site.
     #[cfg(feature = "cache")]
     pub fn with_pipeline(mut self, pipeline: Arc<InvalidationPipeline>) -> Self {
         self.pipeline = Some(pipeline);
