@@ -104,16 +104,36 @@ impl AmlCaseManager {
             if let Some(ref sar_svc) = self.sar_svc {
                 let svc = Arc::clone(sar_svc);
                 let case_id = case.id;
-                let tx_id = result.transaction_id;
                 let wallet = wallet_address.to_owned();
+                let risk_score = result.risk_score;
+                let tx_id = result.transaction_id;
+                let flags_json_clone = serde_json::to_value(&result.flags).unwrap_or_default();
+                let detection_method = if result.flags.iter().any(|f| matches!(f, AmlFlag::SanctionsHit { .. })) {
+                    crate::sar::DetectionMethod::SanctionsMatch
+                } else {
+                    crate::sar::DetectionMethod::AmlRuleTrigger
+                };
+                let today = chrono::Utc::now().date_naive();
                 tokio::spawn(async move {
-                    match svc.auto_draft(case_id, tx_id, &wallet).await {
+                    match svc.auto_initiate(
+                        case_id,
+                        detection_method,
+                        None,
+                        vec![wallet],
+                        format!("Automated SAR from AML engine. Risk score: {risk_score:.2}"),
+                        today - chrono::Duration::days(1),
+                        today,
+                        rust_decimal::Decimal::ZERO,
+                        0,
+                        vec![tx_id],
+                        flags_json_clone,
+                        Some(risk_score),
+                        None,
+                    ).await {
                         Ok(sar) => {
-                            if let Err(e) = svc.submit_for_review(sar.id).await {
-                                error!(sar_id = %sar.id, error = %e, "Failed to submit SAR for review");
-                            }
+                            tracing::info!(sar_id = %sar.id, aml_case_id = %case_id, "SAR auto-initiated from AML case");
                         }
-                        Err(e) => error!(aml_case_id = %case_id, error = %e, "SAR auto-draft failed"),
+                        Err(e) => error!(aml_case_id = %case_id, error = %e, "SAR auto-initiation failed"),
                     }
                 });
             }

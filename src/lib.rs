@@ -15,6 +15,10 @@ pub mod database;
 #[cfg(feature = "database")]
 pub mod chains;
 
+// Stellar Ecosystem Partner Integration — SEP-24/SEP-31 anchors, DEX pathfinding (Issue #470)
+#[cfg(feature = "database")]
+pub mod stellar_ecosystem;
+
 // Partner ecosystem integrations
 #[cfg(feature = "database")]
 pub mod partner;
@@ -66,6 +70,10 @@ pub mod analytics;
 #[cfg(feature = "database")]
 pub mod lp_payout;
 
+// Partner Revenue Sharing & Commission Management Engine (Issue #471)
+#[cfg(feature = "database")]
+pub mod commission;
+
 // Data classification framework — authoritative sensitivity taxonomy and
 // policy enforcement for every data field on the platform.
 #[cfg(feature = "database")]
@@ -78,6 +86,10 @@ pub mod api;
 // Auth module – JWT generation, validation, middleware
 #[cfg(feature = "database")]
 pub mod auth;
+
+// SAR (Suspicious Activity Report) management
+#[cfg(feature = "database")]
+pub mod sar;
 
 // OAuth 2.0 authorization server
 #[cfg(feature = "database")]
@@ -149,6 +161,11 @@ pub mod gateway;
 #[cfg(feature = "database")]
 pub mod vault;
 
+// High-throughput Stellar transaction submission engine
+// Multi-channel account pooling, dynamic fee management, sequence coordination
+#[cfg(feature = "database")]
+pub mod stellar;
+
 // Treasury Emergency Intervention Framework — one-click peg stabilisation
 #[cfg(feature = "database")]
 pub mod treasury;
@@ -164,6 +181,10 @@ pub mod agent_swarm;
 // Performance SLA Management & Breach Response (Issue #405)
 #[cfg(feature = "database")]
 pub mod sla;
+
+// Performance Profiling & Monitoring (Issue: Performance Profiling)
+#[cfg(feature = "database")]
+pub mod profiling;
 // Agent Admin Dashboard — HITL control system for autonomous agents
 #[cfg(feature = "database")]
 pub mod agent_dashboard;
@@ -171,6 +192,9 @@ pub mod agent_dashboard;
 // Multi-Signature Governance Framework — M-of-N signing for Mint/Burn/SetOptions
 #[cfg(feature = "database")]
 pub mod multisig;
+// Mint Authorization Framework — cNGN issuance via M-of-N multi-signature approval (#213)
+#[cfg(feature = "database")]
+pub mod mint_authorization;
 // Adaptive rate limiting and throttling system
 #[cfg(feature = "cache")]
 pub mod adaptive_rate_limit;
@@ -262,6 +286,10 @@ pub mod banking;
 #[cfg(feature = "database")]
 pub mod collateral_lending;
 
+// DeFi Integration Architecture & Analytics Dashboard (Issues #370, #348)
+#[cfg(feature = "database")]
+pub mod defi;
+
 // Issue #399 — Event-Driven Architecture (async event bus, DLQ, idempotent consumers)
 #[cfg(feature = "database")]
 pub mod event_bus;
@@ -269,6 +297,10 @@ pub mod event_bus;
 // Issue #393 — Travel Rule Compliance (FATF Rec. 16, IVMS101, TRISA/TRUST/OpenVASP)
 #[cfg(feature = "database")]
 pub mod travel_rule;
+
+// Issue #499 — CBDC Interoperability & Sandbox Integration
+#[cfg(feature = "database")]
+pub mod cbdc;
 
 // Contract error enum for Soroban (only when not using database feature)
 #[cfg(not(feature = "database"))]

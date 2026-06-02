@@ -62,7 +62,14 @@ mod defi;
 
 // Issue #407 — Banking Partner Integration & Account Linkage
 mod banking;
+
+// Issue #499 — CBDC Interoperability & Sandbox Integration
+mod cbdc;
+
 mod capacity;
+
+// Regulatory Examination Support & Evidence Package
+mod regulatory_evidence;
 
 // Imports
 use std::sync::Arc;
@@ -313,6 +320,22 @@ async fn main() -> anyhow::Result<()> {
         Some(db_pool)
     };
 
+    // ── Initialize Security Anomaly Detection & Circuit Breaker (Issue #297) ──
+    let (anomaly_service, circuit_breaker) = if let Some(ref pool) = db_pool {
+        let sec_config = crate::security::AnomalyDetectionConfig::from_env();
+        let service = std::sync::Arc::new(crate::security::AnomalyDetectionService::new(
+            pool.clone(),
+            sec_config,
+        ));
+        let middleware = std::sync::Arc::new(crate::security::CircuitBreakerMiddleware::new(
+            service.clone(),
+        ));
+        info!("✅ AnomalyDetectionService and CircuitBreakerMiddleware initialized");
+        (Some(service), Some(middleware))
+    } else {
+        (None, None)
+    };
+
     // Initialize cache connection pool
     let redis_cache = if skip_externals {
         info!("⏭️  Skipping Redis initialization (SKIP_EXTERNALS=true)");
@@ -506,20 +529,56 @@ async fn main() -> anyhow::Result<()> {
         }),
     );
 
+    // ── Multi-level cache — built ONCE, shared by warming, admin, CDN, pipelines ──
+    let shared_ml_cache: Option<std::sync::Arc<cache::MultiLevelCache>> =
+        if let Some(ref redis) = redis_cache {
+            let registry = prometheus::default_registry();
+            Some(std::sync::Arc::new(cache::build_multi_level_cache(
+                redis.clone(),
+                registry,
+            )))
+        } else {
+            None
+        };
+
+    // ── InvalidationPipeline — centralises write-through deletes ─────────────
+    // ── InvalidationPipeline — centralises write-through cache deletes ────────
+    // Currently injected into:
+    //   • ExchangeRateRepository (exchange-rate writes → v1:rate:* invalidation)
+    // Prepared (method exists, no server-managed write path yet):
+    //   • WalletRepository::with_pipeline() — WalletRepository::update_balance
+    //     is not called via any main.rs-managed path today; wallet balance cache
+    //     invalidation will be wired here when that write path is introduced.
+    let shared_invalidation_pipeline: Option<std::sync::Arc<cache::InvalidationPipeline>> =
+        if let (Some(ref redis), Some(ref pool)) = (&redis_cache, &db_pool) {
+            Some(cache::InvalidationPipeline::new(
+                std::sync::Arc::new(redis.clone()),
+                Some(std::sync::Arc::new(pool.clone())),
+            ))
+        } else {
+            None
+        };
+
     // --- Cache warming (must complete before traffic is accepted) ---
-    if let (Some(ref pool), Some(ref redis)) = (&db_pool, &redis_cache) {
-        let registry = prometheus::default_registry();
-        let ml_cache = cache::build_multi_level_cache(redis.clone(), registry);
-        let rate_repo = database::exchange_rate_repository::ExchangeRateRepository::new(pool.clone());
-        let fee_repo = database::fee_structure_repository::FeeStructureRepository::new(pool.clone());
+    if let (Some(ref pool), Some(ref redis), Some(ref ml)) =
+        (&db_pool, &redis_cache, &shared_ml_cache)
+    {
+        let rate_repo =
+            database::exchange_rate_repository::ExchangeRateRepository::new(pool.clone());
+        let fee_repo =
+            database::fee_structure_repository::FeeStructureRepository::new(pool.clone());
         let ws = warming_state.clone();
-        let l1 = ml_cache.l1.clone();
+        let l1 = ml.l1.clone();
         let redis_clone = redis.clone();
+        let ml_clone = ml.clone();
         tokio::spawn(async move {
             warm_caches(&l1, &redis_clone, &rate_repo, &fee_repo, &ws).await;
         });
+
+        // Cache stats worker — polls Redis memory + L1 sizes every 60 s
+        cache::CacheStatsWorker::new(ml_clone, std::sync::Arc::new(redis.clone())).start();
+        info!("✅ Cache stats worker started");
     } else {
-        // No DB or Redis — mark ready immediately so health check passes.
         warming_state.mark_ready();
     }
 
@@ -879,6 +938,7 @@ async fn main() -> anyhow::Result<()> {
                     por_signing_key,
                     audit_writer.clone(),
                     asset_issuer,
+                    anomaly_service.clone(),
                 );
                 tokio::spawn(por_worker.run(worker_shutdown_rx.clone()));
                 info!("✅ Proof-of-Reserves (PoR) worker started (60-min interval)");
@@ -1115,8 +1175,14 @@ async fn main() -> anyhow::Result<()> {
             .or_else(|_| std::env::var("CNGN_ISSUER_MAINNET"))
             .unwrap_or_else(|_| "GXXXXDEFAULTISSUERXXXX".to_string());
 
-        let rate_repo =
-            database::exchange_rate_repository::ExchangeRateRepository::new(pool.clone());
+        let rate_repo = {
+            let mut r = database::exchange_rate_repository::ExchangeRateRepository::new(pool.clone());
+            #[cfg(feature = "cache")]
+            if let Some(ref pipeline) = shared_invalidation_pipeline {
+                r = r.with_pipeline(pipeline.clone());
+            }
+            r
+        };
         let fee_repo =
             database::fee_structure_repository::FeeStructureRepository::new(pool.clone());
         let fee_service =
@@ -1221,6 +1287,8 @@ async fn main() -> anyhow::Result<()> {
             stellar_client: stellar_client_arc,
             orchestrator: onramp_orchestrator,
             cngn_issuer: cngn_issuer_for_initiate,
+            circuit_breaker: circuit_breaker.clone().expect("circuit breaker missing"),
+            anomaly_service: anomaly_service.clone().expect("anomaly service missing"),
         });
 
         let onramp_integrity_state = crate::middleware::request_integrity::RequestIntegrityState {
@@ -1354,6 +1422,8 @@ async fn main() -> anyhow::Result<()> {
         
         Router::new()
             .route("/api/rates", get(api::rates::get_rates).options(api::rates::options_rates))
+            // Apply CDN middleware: body-hash ETag + 304 + Cache-Control: public, max-age=90
+            .layer(axum::middleware::from_fn(cache::cdn_cache_middleware))
             .with_state(rates_state)
     } else {
         info!("⏭️  Skipping rates routes (no database)");
@@ -1402,6 +1472,7 @@ async fn main() -> anyhow::Result<()> {
             bank_verification_service,
             system_wallet_address,
             cngn_issuer_address,
+            circuit_breaker: circuit_breaker.clone().expect("circuit breaker missing"),
         };
 
         let offramp_integrity_state = crate::middleware::request_integrity::RequestIntegrityState {
@@ -1437,6 +1508,7 @@ async fn main() -> anyhow::Result<()> {
         
         Router::new()
             .route("/api/fees", get(api::fees::get_fees))
+            .layer(axum::middleware::from_fn(cache::cdn_cache_middleware))
             .with_state(fees_state)
     } else {
         info!("⏭️  Skipping fees routes (no database)");
@@ -1925,11 +1997,19 @@ async fn main() -> anyhow::Result<()> {
         Router::new()
     };
 
-    // ── SAR (Suspicious Activity Report) workflow ─────────────────────────────
+    // ── SAR (Suspicious Activity Report) management ───────────────────────────
     let sar_routes = if let Some(ref pool) = db_pool {
+        use middleware::rbac::{extract_identity, require_role, ROLE_COMPLIANCE_OFFICER};
         let sar_svc = std::sync::Arc::new(crate::sar::SarService::new(pool.clone()));
-        info!("📋 SAR workflow routes enabled");
-        Router::new().nest("/api/v1/sar", crate::sar::routes::router(sar_svc))
+        let deadline_worker = crate::sar::deadline_worker::SarDeadlineWorker::new(sar_svc.clone());
+        tokio::spawn(deadline_worker.run(worker_shutdown_rx.clone()));
+        info!("📋 SAR management routes enabled");
+        Router::new().nest(
+            "/api/admin/compliance/sars",
+            crate::sar::sar_routes(sar_svc)
+                .route_layer(axum::middleware::from_fn(require_role(ROLE_COMPLIANCE_OFFICER)))
+                .route_layer(axum::middleware::from_fn(extract_identity)),
+        )
     } else {
         Router::new()
     };
@@ -1950,6 +2030,23 @@ async fn main() -> anyhow::Result<()> {
             .merge(auditor_portal::routes::admin_auditor_routes(state))
     } else {
         info!("⏭️  Skipping auditor portal routes (no database)");
+        Router::new()
+    };
+
+    // ── Regulatory Examination Support & Evidence Package ─────────────────────
+    let regulatory_evidence_routes = if let (Some(ref pool), Some(ref writer)) = (db_pool.as_ref(), audit_writer.as_ref()) {
+        let reg_repo = std::sync::Arc::new(regulatory_evidence::RegulatoryEvidenceRepository::new(pool.clone()));
+        let reg_service = std::sync::Arc::new(regulatory_evidence::RegulatoryEvidenceService::new(
+            reg_repo,
+            writer.clone(),
+        ));
+        let reg_state = std::sync::Arc::new(regulatory_evidence::RegulatoryEvidenceState {
+            service: reg_service,
+        });
+        info!("📋 Regulatory evidence package routes enabled");
+        regulatory_evidence::regulatory_evidence_routes(reg_state)
+    } else {
+        info!("⏭️  Skipping regulatory evidence routes (no database)");
         Router::new()
     };
 
@@ -2225,7 +2322,9 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn(liq_worker.run(worker_shutdown_rx.clone()));
         info!("✅ Liquidity health worker started (interval={}s)", health_interval);
 
+        // CDN middleware: public liquidity depth queries are cacheable
         liquidity::routes::public_routes(liq_state.clone())
+            .layer(axum::middleware::from_fn(cache::cdn_cache_middleware))
             .merge(liquidity::routes::admin_routes(liq_state))
     } else {
         info!("⏭️  Skipping liquidity routes (missing database or cache)");
@@ -2350,6 +2449,64 @@ async fn main() -> anyhow::Result<()> {
     } else {
         info!("⏭️  Skipping banking routes (no database)");
         (Router::new(), Router::new())
+    };
+
+    // ── CBDC Interoperability & Sandbox Bridge (Issue #499) ─────────────────
+    let (cbdc_routes, cbdc_admin_route, cbdc_worker_handle) = if let (Some(pool), Some(redis)) =
+        (db_pool.clone(), redis_cache.clone())
+    {
+        use cbdc::*;
+
+        let repo = std::sync::Arc::new(CbdcRepository::new(pool.clone()));
+        let config = CbdcWorkerConfig::from_env();
+        let hsm_config = hsm::HsmClientConfig::default();
+        let hsm_client = std::sync::Arc::new(hsm::HsmClient::new(hsm_config));
+        let validator = std::sync::Arc::new(SwapValidator::new());
+        let gateway_pool = std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new()));
+
+        let two_pc = std::sync::Arc::new(TwoPhaseCommitManager::new(
+            repo.clone(),
+            redis.pool.clone(),
+            &config,
+        ));
+
+        let settlement_worker = std::sync::Arc::new(SettlementWorker::new(
+            repo.clone(),
+            two_pc.clone(),
+            validator.clone(),
+            gateway_pool.clone(),
+            config.clone(),
+        ));
+
+        let reversal_engine = std::sync::Arc::new(ReversalEngine::new(
+            repo.clone(),
+            config.clone(),
+        ));
+
+        // Spawn settlement worker
+        let settlement_shutdown_rx = worker_shutdown_rx.clone();
+        let settlement_handle = tokio::spawn(async move {
+            settlement_worker.run(settlement_shutdown_rx).await;
+        });
+
+        // Spawn reversal engine
+        let reversal_shutdown_rx = worker_shutdown_rx.clone();
+        let reversal_handle = tokio::spawn(async move {
+            reversal_engine.run(reversal_shutdown_rx).await;
+        });
+
+        info!("✅ CBDC Interoperability workers started (settlement + reversal)");
+
+        let handler_state = std::sync::Arc::new(CbdcHandlerState::new(repo));
+
+        (
+            cbdc_api_routes(handler_state.clone()),
+            cbdc_admin_routes(handler_state),
+            Some((settlement_handle, reversal_handle)),
+        )
+    } else {
+        info!("⏭️  Skipping CBDC routes (missing database or redis)");
+        (Router::new(), Router::new(), None)
     };
 
     // ── Multi-Sig Governance routes (Issue: Multi-Sig Governance) ────────────
@@ -2587,6 +2744,28 @@ async fn main() -> anyhow::Result<()> {
         Router::new()
     };
 
+    // DeFi Analytics & Yield Performance Dashboard — Issue #348
+    let defi_analytics_routes = if let Some(pool) = db_pool.clone() {
+        let repo = std::sync::Arc::new(
+            defi::analytics::DefiAnalyticsRepository::new(std::sync::Arc::new(pool.clone()))
+        );
+        let svc = std::sync::Arc::new(defi::analytics::DefiAnalyticsService::new(repo));
+
+        // Spawn background snapshot worker
+        let worker_svc = svc.clone();
+        let worker_config = defi::analytics::worker::DefiAnalyticsWorkerConfig::default();
+        tokio::spawn(
+            defi::analytics::worker::DefiAnalyticsWorker::new(worker_svc, worker_config)
+                .run(worker_shutdown_rx.clone())
+        );
+        info!("✅ DeFi analytics snapshot worker started");
+
+        defi::analytics::defi_analytics_routes(svc)
+    } else {
+        info!("⏭️  Skipping DeFi analytics routes (no database)");
+        Router::new()
+    };
+
     let app = Router::new()
         .route("/", get(root))
         .route("/health", get(health))
@@ -2638,6 +2817,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(audit_routes)
         .merge(auditor_portal_routes)
         .merge(sar_routes)
+        .merge(regulatory_evidence_routes)
         .merge(compliance_effectiveness_routes)
         .merge(kyb_routes)
         .merge(key_rotation_routes)
@@ -2674,8 +2854,11 @@ async fn main() -> anyhow::Result<()> {
         .merge(dispute_routes)
         .merge(banking_routes)
         .merge(banking_webhook_routes)
+        .merge(cbdc_routes)
+        .merge(cbdc_admin_route)
         .merge(sla_routes)
         .merge(pep_routes)
+        .merge(defi_analytics_routes)
         .with_state(AppState {
             db_pool,
             redis_cache,
@@ -2975,6 +3158,15 @@ async fn main() -> anyhow::Result<()> {
     if let Some(handle) = mint_expiry_handle {
         if let Err(e) = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await {
             error!(error = %e, "Timed out waiting for mint expiry worker shutdown");
+        }
+    }
+
+    if let Some((settlement_handle, reversal_handle)) = cbdc_worker_handle {
+        if let Err(e) = tokio::time::timeout(std::time::Duration::from_secs(5), settlement_handle).await {
+            error!(error = %e, "Timed out waiting for CBDC settlement worker shutdown");
+        }
+        if let Err(e) = tokio::time::timeout(std::time::Duration::from_secs(5), reversal_handle).await {
+            error!(error = %e, "Timed out waiting for CBDC reversal engine shutdown");
         }
     }
 

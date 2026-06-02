@@ -352,35 +352,49 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> Cache<T> for Redis
         Ok(result)
     }
 
+    /// Delete all keys matching `pattern` using SCAN (cursor-based, non-blocking).
+    /// Replaces the former KEYS-based implementation which blocks Redis on large keyspaces.
     async fn delete_pattern(&self, pattern: &str) -> CacheResult<u64> {
         let mut conn = match self.get_connection().await {
             Ok(conn) => conn,
-            Err(_) => return Ok(0), // Graceful degradation
+            Err(_) => return Ok(0),
         };
 
-        // Get all keys matching the pattern
-        let keys: Vec<String> = conn.keys(pattern).await.map_err(|e| {
-            warn!("Redis KEYS failed for pattern '{}': {}", pattern, e);
-            e
-        })?;
+        let mut cursor: u64 = 0;
+        let mut total_deleted: u64 = 0;
 
-        if keys.is_empty() {
-            return Ok(0);
+        loop {
+            // SCAN returns (next_cursor, keys)
+            let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                .arg(cursor)
+                .arg("MATCH")
+                .arg(pattern)
+                .arg("COUNT")
+                .arg(100u64)
+                .query_async(&mut *conn)
+                .await
+                .map_err(|e| {
+                    warn!("Redis SCAN failed for pattern '{}': {}", pattern, e);
+                    e
+                })?;
+
+            if !keys.is_empty() {
+                let key_refs: Vec<&str> = keys.iter().map(|s| s.as_str()).collect();
+                let deleted: i64 = conn.del(key_refs).await.map_err(|e| {
+                    warn!("Redis DEL (from SCAN) failed: {}", e);
+                    e
+                })?;
+                total_deleted += deleted as u64;
+            }
+
+            cursor = next_cursor;
+            if cursor == 0 {
+                break; // full scan complete
+            }
         }
 
-        // Delete all matching keys
-        let key_refs: Vec<&str> = keys.iter().map(|s| s.as_str()).collect();
-        let result: i32 = conn.del(key_refs).await.map_err(|e| {
-            warn!("Redis DEL failed for pattern '{}': {}", pattern, e);
-            e
-        })?;
-
-        let deleted = result as u64;
-        debug!(
-            "Cache delete_pattern '{}' deleted {} keys",
-            pattern, deleted
-        );
-        Ok(deleted)
+        debug!("Cache SCAN delete_pattern '{}' deleted {} keys", pattern, total_deleted);
+        Ok(total_deleted)
     }
 }
 

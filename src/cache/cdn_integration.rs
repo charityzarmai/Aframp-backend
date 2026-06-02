@@ -492,6 +492,139 @@ impl CDNMiddleware {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Axum middleware (Issue #459) — body ETag + 304 + route-based Cache-Control
+// ---------------------------------------------------------------------------
+
+use axum::{
+    body::Body,
+    extract::Request,
+    middleware::Next,
+    response::Response,
+};
+
+/// Generate a deterministic ETag from response body bytes (SHA-256 first 16 hex chars).
+pub fn body_etag(body: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let hash = Sha256::digest(body);
+    // Format as lowercase hex, take first 16 bytes (32 chars) for compactness
+    let hex: String = hash.iter().take(16).map(|b| format!("{:02x}", b)).collect();
+    format!("\"{}\"", hex)
+}
+
+/// Return the correct `Cache-Control` header value for a given request path.
+///
+/// Route map (aligned with #459 acceptance criteria):
+/// - `/api/rates`, `/api/fees`, `/api/liquidity` → `public, max-age=90, s-maxage=90`
+/// - `/api/admin/`                               → `no-store, private`
+/// - `/api/v1/user/`, `/api/users/`              → `private, max-age=0, must-revalidate`
+/// - everything else                             → `no-cache`
+pub fn route_cache_control(path: &str) -> &'static str {
+    if path.starts_with("/api/rates")
+        || path.starts_with("/api/fees")
+        || path.starts_with("/api/liquidity")
+    {
+        "public, max-age=90, s-maxage=90"
+    } else if path.starts_with("/api/admin") {
+        "no-store, private"
+    } else if path.starts_with("/api/v1/user") || path.starts_with("/api/users") {
+        "private, max-age=0, must-revalidate"
+    } else {
+        "no-cache"
+    }
+}
+
+/// Axum `from_fn` middleware that:
+/// 1. Sets `Cache-Control` based on request path
+/// 2. Generates a body-hash ETag on GET 200 responses
+/// 3. Returns 304 if `If-None-Match` matches the ETag
+///
+/// Mount on routes that serve public data (rates, fees, liquidity).
+pub async fn cdn_cache_middleware(request: Request, next: Next) -> Response {
+    use axum::http::{header, StatusCode};
+
+    let path = request.uri().path().to_string();
+    let method = request.method().clone();
+    let if_none_match = request
+        .headers()
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    let cache_control = route_cache_control(&path);
+
+    let mut response = next.run(request).await;
+
+    // Set Cache-Control on every response
+    if let Ok(value) = header::HeaderValue::from_str(cache_control) {
+        response.headers_mut().insert(header::CACHE_CONTROL, value);
+    }
+
+    // Only compute ETag for successful GET/HEAD responses
+    if method != axum::http::Method::GET && method != axum::http::Method::HEAD {
+        return response;
+    }
+    if response.status() != StatusCode::OK {
+        return response;
+    }
+
+    // Collect body bytes to hash — only for public routes (no private data)
+    if cache_control.contains("private") || cache_control.contains("no-store") {
+        return response;
+    }
+
+    let (parts, body) = response.into_parts();
+    let bytes = match axum::body::to_bytes(body, 4 * 1024 * 1024).await {
+        Ok(b) => b,
+        Err(_) => return Response::from_parts(parts, Body::empty()),
+    };
+
+    let etag = body_etag(&bytes);
+
+    // 304 if client already has this version
+    if if_none_match.as_deref() == Some(&etag) {
+        crate::metrics::cache::cdn_cache_status_total()
+            .with_label_values(&["304", path_prefix(&path)])
+            .inc();
+        let mut not_modified = Response::new(Body::empty());
+        *not_modified.status_mut() = StatusCode::NOT_MODIFIED;
+        if let Ok(v) = header::HeaderValue::from_str(&etag) {
+            not_modified.headers_mut().insert(header::ETAG, v);
+        }
+        return not_modified;
+    }
+
+    crate::metrics::cache::cdn_cache_status_total()
+        .with_label_values(&["200", path_prefix(&path)])
+        .inc();
+
+    let mut new_resp = Response::from_parts(parts, Body::from(bytes));
+    if let Ok(v) = header::HeaderValue::from_str(&etag) {
+        new_resp.headers_mut().insert(header::ETAG, v);
+    }
+
+    // CDN edge-cache control headers (Surrogate-Control for Varnish/Fastly,
+    // Surrogate-Key / Cache-Tag for per-tag purge via Cloudflare/CloudFront)
+    let tag = path_prefix(&path);
+    if let Ok(v) = header::HeaderValue::from_str(&format!("max-age=90")) {
+        new_resp.headers_mut().insert("Surrogate-Control", v);
+    }
+    if let Ok(v) = header::HeaderValue::from_str(tag) {
+        new_resp.headers_mut().insert("Surrogate-Key", v);
+        // CloudFront uses Cache-Tag
+        new_resp.headers_mut().insert("Cache-Tag", header::HeaderValue::from_str(tag).unwrap());
+    }
+
+    new_resp
+}
+
+fn path_prefix(path: &str) -> &'static str {
+    if path.starts_with("/api/rates") { "rates" }
+    else if path.starts_with("/api/fees") { "fees" }
+    else if path.starts_with("/api/liquidity") { "liquidity" }
+    else { "other" }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -514,18 +647,39 @@ mod tests {
     }
 
     #[test]
-    fn test_etag_generation() {
-        let config = CDNConfig::default();
-        let manager = CDNManager::new(config);
+    fn test_etag_generation_is_deterministic() {
+        // Body-hash ETags for the same content must be equal
+        let body = b"exchange-rate-response-body";
+        let e1 = body_etag(body);
+        let e2 = body_etag(body);
+        assert_eq!(e1, e2);
+        assert!(e1.starts_with('"'));
+        assert!(e1.ends_with('"'));
+    }
 
-        let etag1 = manager.generate_etag(ResourceType::APIResponse);
-        let etag2 = manager.generate_etag(ResourceType::APIResponse);
+    #[test]
+    fn test_etag_differs_for_different_bodies() {
+        let e1 = body_etag(b"body-one");
+        let e2 = body_etag(b"body-two");
+        assert_ne!(e1, e2);
+    }
 
-        // ETags should be different due to timestamp
-        assert_ne!(etag1, etag2);
+    #[test]
+    fn test_route_cache_control_rates() {
+        let cc = route_cache_control("/api/rates");
+        assert!(cc.contains("public"));
+        assert!(cc.contains("max-age=90"));
+    }
 
-        // ETags should be valid format
-        assert!(etag1.starts_with('"'));
-        assert!(etag1.ends_with('"'));
+    #[test]
+    fn test_route_cache_control_admin() {
+        let cc = route_cache_control("/api/admin/something");
+        assert!(cc.contains("no-store"));
+    }
+
+    #[test]
+    fn test_route_cache_control_user() {
+        let cc = route_cache_control("/api/v1/user/profile");
+        assert!(cc.contains("private"));
     }
 }
