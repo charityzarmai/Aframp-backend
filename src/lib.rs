@@ -282,10 +282,9 @@ pub mod event_bus;
 #[cfg(feature = "database")]
 pub mod travel_rule;
 
-// Regulatory Examination Support & Evidence Package
-// Automated evidence collection, policy versioning, signed exports, system test reports
+// Issue #499 — CBDC Interoperability & Sandbox Integration
 #[cfg(feature = "database")]
-pub mod regulatory_evidence;
+pub mod cbdc;
 
 // Contract error enum for Soroban (only when not using database feature)
 #[cfg(not(feature = "database"))]
