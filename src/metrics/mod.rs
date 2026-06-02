@@ -527,6 +527,18 @@ pub mod cache {
     static CACHE_HITS_TOTAL: OnceLock<CounterVec> = OnceLock::new();
     static CACHE_MISSES_TOTAL: OnceLock<CounterVec> = OnceLock::new();
     static CACHE_OPERATION_DURATION_SECONDS: OnceLock<HistogramVec> = OnceLock::new();
+    static CACHE_HIT_RATIO_TOTAL: OnceLock<CounterVec> = OnceLock::new();
+    static CDN_CACHE_STATUS_TOTAL: OnceLock<CounterVec> = OnceLock::new();
+    static REDIS_MEMORY_USED_BYTES: OnceLock<GaugeVec> = OnceLock::new();
+    static REDIS_MAXMEMORY_BYTES: OnceLock<GaugeVec> = OnceLock::new();
+
+    pub fn redis_memory_used_bytes() -> &'static GaugeVec {
+        REDIS_MEMORY_USED_BYTES.get().expect("metrics not initialised")
+    }
+
+    pub fn redis_maxmemory_bytes() -> &'static GaugeVec {
+        REDIS_MAXMEMORY_BYTES.get().expect("metrics not initialised")
+    }
 
     pub fn hits_total() -> &'static CounterVec {
         CACHE_HITS_TOTAL.get().expect("metrics not initialised")
@@ -540,6 +552,17 @@ pub mod cache {
         CACHE_OPERATION_DURATION_SECONDS
             .get()
             .expect("metrics not initialised")
+    }
+
+    /// Per-tier, per-namespace hit counter. Compute ratio via `rate()` in Prometheus:
+    ///   `rate(cache_hit_ratio_total{tier="l2",namespace="rate"}[5m])`
+    pub fn cache_hit_ratio_total() -> &'static CounterVec {
+        CACHE_HIT_RATIO_TOTAL.get().expect("metrics not initialised")
+    }
+
+    /// CDN edge cache status per path prefix.
+    pub fn cdn_cache_status_total() -> &'static CounterVec {
+        CDN_CACHE_STATUS_TOTAL.get().expect("metrics not initialised")
     }
 
     pub(super) fn register(r: &Registry) {
@@ -574,6 +597,54 @@ pub mod cache {
                     "Redis cache operation duration in seconds",
                     &["operation"],
                     vec![0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5],
+                    r
+                )
+                .unwrap(),
+            )
+            .ok();
+
+        CACHE_HIT_RATIO_TOTAL
+            .set(
+                register_counter_vec_with_registry!(
+                    "aframp_cache_hit_ratio_total",
+                    "Cache hit events by tier (l1|l2) and namespace — use rate() for ratio",
+                    &["tier", "namespace"],
+                    r
+                )
+                .unwrap(),
+            )
+            .ok();
+
+        CDN_CACHE_STATUS_TOTAL
+            .set(
+                register_counter_vec_with_registry!(
+                    "aframp_cdn_cache_status_total",
+                    "CDN/edge cache response status by status code and path prefix",
+                    &["status", "path_prefix"],
+                    r
+                )
+                .unwrap(),
+            )
+            .ok();
+
+        REDIS_MEMORY_USED_BYTES
+            .set(
+                register_gauge_vec_with_registry!(
+                    "aframp_redis_memory_used_bytes",
+                    "Redis used_memory in bytes (from INFO memory)",
+                    &["instance"],
+                    r
+                )
+                .unwrap(),
+            )
+            .ok();
+
+        REDIS_MAXMEMORY_BYTES
+            .set(
+                register_gauge_vec_with_registry!(
+                    "aframp_redis_maxmemory_bytes",
+                    "Redis maxmemory configured limit in bytes (0 = unlimited)",
+                    &["instance"],
                     r
                 )
                 .unwrap(),
