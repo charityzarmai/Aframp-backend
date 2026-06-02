@@ -87,6 +87,10 @@ pub mod api;
 #[cfg(feature = "database")]
 pub mod auth;
 
+// SAR (Suspicious Activity Report) management
+#[cfg(feature = "database")]
+pub mod sar;
+
 // OAuth 2.0 authorization server
 #[cfg(feature = "database")]
 pub mod oauth;

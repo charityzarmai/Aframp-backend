@@ -1949,11 +1949,19 @@ async fn main() -> anyhow::Result<()> {
         Router::new()
     };
 
-    // ── SAR (Suspicious Activity Report) workflow ─────────────────────────────
+    // ── SAR (Suspicious Activity Report) management ───────────────────────────
     let sar_routes = if let Some(ref pool) = db_pool {
+        use middleware::rbac::{extract_identity, require_role, ROLE_COMPLIANCE_OFFICER};
         let sar_svc = std::sync::Arc::new(crate::sar::SarService::new(pool.clone()));
-        info!("📋 SAR workflow routes enabled");
-        Router::new().nest("/api/v1/sar", crate::sar::routes::router(sar_svc))
+        let deadline_worker = crate::sar::deadline_worker::SarDeadlineWorker::new(sar_svc.clone());
+        tokio::spawn(deadline_worker.run(worker_shutdown_rx.clone()));
+        info!("📋 SAR management routes enabled");
+        Router::new().nest(
+            "/api/admin/compliance/sars",
+            crate::sar::sar_routes(sar_svc)
+                .route_layer(axum::middleware::from_fn(require_role(ROLE_COMPLIANCE_OFFICER)))
+                .route_layer(axum::middleware::from_fn(extract_identity)),
+        )
     } else {
         Router::new()
     };
