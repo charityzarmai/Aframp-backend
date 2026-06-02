@@ -265,6 +265,22 @@ async fn main() -> anyhow::Result<()> {
         Some(db_pool)
     };
 
+    // ── Initialize Security Anomaly Detection & Circuit Breaker (Issue #297) ──
+    let (anomaly_service, circuit_breaker) = if let Some(ref pool) = db_pool {
+        let sec_config = crate::security::AnomalyDetectionConfig::from_env();
+        let service = std::sync::Arc::new(crate::security::AnomalyDetectionService::new(
+            pool.clone(),
+            sec_config,
+        ));
+        let middleware = std::sync::Arc::new(crate::security::CircuitBreakerMiddleware::new(
+            service.clone(),
+        ));
+        info!("✅ AnomalyDetectionService and CircuitBreakerMiddleware initialized");
+        (Some(service), Some(middleware))
+    } else {
+        (None, None)
+    };
+
     // Initialize cache connection pool
     let redis_cache = if skip_externals {
         info!("⏭️  Skipping Redis initialization (SKIP_EXTERNALS=true)");
@@ -831,6 +847,7 @@ async fn main() -> anyhow::Result<()> {
                     por_signing_key,
                     audit_writer.clone(),
                     asset_issuer,
+                    anomaly_service.clone(),
                 );
                 tokio::spawn(por_worker.run(worker_shutdown_rx.clone()));
                 info!("✅ Proof-of-Reserves (PoR) worker started (60-min interval)");
@@ -1173,6 +1190,8 @@ async fn main() -> anyhow::Result<()> {
             stellar_client: stellar_client_arc,
             orchestrator: onramp_orchestrator,
             cngn_issuer: cngn_issuer_for_initiate,
+            circuit_breaker: circuit_breaker.clone().expect("circuit breaker missing"),
+            anomaly_service: anomaly_service.clone().expect("anomaly service missing"),
         });
 
         let onramp_integrity_state = crate::middleware::request_integrity::RequestIntegrityState {
@@ -1354,6 +1373,7 @@ async fn main() -> anyhow::Result<()> {
             bank_verification_service,
             system_wallet_address,
             cngn_issuer_address,
+            circuit_breaker: circuit_breaker.clone().expect("circuit breaker missing"),
         };
 
         let offramp_integrity_state = crate::middleware::request_integrity::RequestIntegrityState {
