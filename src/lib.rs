@@ -15,6 +15,10 @@ pub mod database;
 #[cfg(feature = "database")]
 pub mod chains;
 
+// Stellar Ecosystem Partner Integration — SEP-24/SEP-31 anchors, DEX pathfinding (Issue #470)
+#[cfg(feature = "database")]
+pub mod stellar_ecosystem;
+
 // Partner ecosystem integrations
 #[cfg(feature = "database")]
 pub mod partner;
