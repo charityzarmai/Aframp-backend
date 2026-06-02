@@ -191,6 +191,21 @@ impl HaPoolManager {
         }
     }
 
+    /// Return one read pool for each shard, using a healthy replica if available.
+    pub async fn all_read_pools(&self) -> Vec<Arc<PgPool>> {
+        let shards = self.shards.read().await;
+        shards
+            .values()
+            .map(|s| Arc::new(s.read_pool().await.clone()))
+            .collect()
+    }
+
+    /// Return one primary pool for each shard.
+    pub async fn all_primary_pools(&self) -> Vec<Arc<PgPool>> {
+        let shards = self.shards.read().await;
+        shards.values().map(|s| Arc::new(s.primary.clone())).collect()
+    }
+
     // -----------------------------------------------------------------------
     // Hot shard addition (no cluster restart required)
     // -----------------------------------------------------------------------

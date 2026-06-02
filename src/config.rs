@@ -1,6 +1,7 @@
 //! Application configuration module
 //! Handles environment variable loading, configuration validation, and application settings
 
+use serde::Deserialize;
 use std::env;
 
 /// Main application configuration
@@ -32,6 +33,20 @@ pub struct DatabaseConfig {
     pub min_connections: u32,
     pub connection_timeout: u64,   // seconds
     pub idle_timeout: Option<u64>, // seconds
+    pub read_replica_url: Option<String>,
+    pub shard_configs: Vec<DatabaseShardConfig>,
+    pub shard_checksum_interval_secs: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DatabaseShardConfig {
+    pub shard_id: u32,
+    pub primary_url: String,
+    #[serde(default)]
+    pub replica_urls: Vec<String>,
+    pub max_connections: Option<u32>,
+    pub min_connections: Option<u32>,
+    pub connection_timeout_secs: Option<u64>,
 }
 
 /// Cache configuration
@@ -241,6 +256,15 @@ impl ServerConfig {
 
 impl DatabaseConfig {
     pub fn from_env() -> Result<Self, ConfigError> {
+        let shard_configs = env::var("DB_SHARD_CONFIG_JSON")
+            .ok()
+            .map(|json| {
+                serde_json::from_str::<Vec<DatabaseShardConfig>>(&json).map_err(|_| {
+                    ConfigError::InvalidValue("DB_SHARD_CONFIG_JSON".to_string())
+                })
+            })
+            .transpose()?;
+
         Ok(DatabaseConfig {
             url: env::var("DATABASE_URL")
                 .map_err(|_| ConfigError::MissingVariable("DATABASE_URL".to_string()))?,
@@ -259,6 +283,12 @@ impl DatabaseConfig {
             idle_timeout: env::var("DB_IDLE_TIMEOUT")
                 .ok()
                 .and_then(|val| val.parse().ok()),
+            read_replica_url: env::var("DATABASE_READ_REPLICA_URL").ok(),
+            shard_configs: shard_configs.unwrap_or_default(),
+            shard_checksum_interval_secs: env::var("DB_SHARD_CHECKSUM_INTERVAL_SECS")
+                .unwrap_or_else(|_| "300".to_string())
+                .parse()
+                .map_err(|_| ConfigError::InvalidValue("DB_SHARD_CHECKSUM_INTERVAL_SECS".to_string()))?,
         })
     }
 
@@ -275,6 +305,22 @@ impl DatabaseConfig {
             return Err(ConfigError::InvalidValue(
                 "DB_MIN_CONNECTIONS must be <= DB_MAX_CONNECTIONS".to_string(),
             ));
+        }
+
+        if !self.shard_configs.is_empty() {
+            let mut seen = std::collections::HashSet::new();
+            for shard in &self.shard_configs {
+                if shard.primary_url.trim().is_empty() {
+                    return Err(ConfigError::InvalidValue(
+                        "DB_SHARD_CONFIG_JSON contains an empty primary_url".to_string(),
+                    ));
+                }
+                if !seen.insert(shard.shard_id) {
+                    return Err(ConfigError::InvalidValue(
+                        "DB_SHARD_CONFIG_JSON contains duplicate shard_id".to_string(),
+                    ));
+                }
+            }
         }
 
         Ok(())

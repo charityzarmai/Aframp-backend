@@ -258,12 +258,60 @@ async fn main() -> anyhow::Result<()> {
             ),
         };
 
-        let db_pool = init_pool(&database_url, Some(db_pool_config))
+        let db_pool = init_pool(&database_url, Some(db_pool_config.clone()))
             .await
             .map_err(|e| {
                 error!("Failed to initialize database pool: {}", e);
                 e
             })?;
+
+        if let Some(replica_url) = app_config.database.read_replica_url.clone() {
+            match init_pool(&replica_url, Some(db_pool_config.clone())).await {
+                Ok(replica_pool) => {
+                    database::set_global_read_replica_pool(replica_pool.clone());
+                    info!(replica_url=%replica_url, "✅ Read replica pool configured");
+                }
+                Err(e) => {
+                    warn!(read_replica_url=%replica_url, error=%e, "Failed to initialize read replica pool, continuing with primary only")
+                }
+            }
+        }
+
+        if !app_config.database.shard_configs.is_empty() {
+            let shards = app_config
+                .database
+                .shard_configs
+                .iter()
+                .map(|cfg| database::ha_pool::ShardConfig {
+                    shard_id: cfg.shard_id,
+                    primary_url: cfg.primary_url.clone(),
+                    replica_urls: cfg.replica_urls.clone(),
+                    max_connections: cfg
+                        .max_connections
+                        .unwrap_or(db_pool_config.max_connections),
+                    min_connections: cfg
+                        .min_connections
+                        .unwrap_or(db_pool_config.min_connections),
+                    connection_timeout: Duration::from_secs(
+                        cfg.connection_timeout_secs
+                            .unwrap_or(db_pool_config.connection_timeout.as_secs()),
+                    ),
+                })
+                .collect();
+            let ha_config = database::ha_pool::HaPoolConfig {
+                shards,
+                checksum_interval: Duration::from_secs(app_config.database.shard_checksum_interval_secs),
+            };
+            match database::ha_pool::HaPoolManager::new(&ha_config).await {
+                Ok(manager) => {
+                    database::set_global_ha_pool(manager.clone());
+                    info!(shard_count = manager.shard_count.load(std::sync::atomic::Ordering::Relaxed), "✅ HA shard manager configured");
+                }
+                Err(e) => {
+                    warn!(error=%e, "Failed to initialize HA shard manager, continuing without sharding");
+                }
+            }
+        }
 
         info!(
             max_connections = db_pool.options().get_max_connections(),
@@ -2817,7 +2865,7 @@ async fn main() -> anyhow::Result<()> {
             stellar_client,
             health_checker,
             warming_state: Some(warming_state),
-            shard_router: None, // populated below if DB is available
+            ha_pool: None, // populated below if DB sharding is enabled
         });
 
     // Apply middleware conditionally based on available services
@@ -3139,7 +3187,7 @@ struct AppState {
     stellar_client: Option<StellarClient>,
     health_checker: HealthChecker,
     warming_state: Option<WarmingState>,
-    shard_router: Option<std::sync::Arc<database::shard::ShardRouter>>,
+    ha_pool: Option<std::sync::Arc<database::ha_pool::HaPoolManager>>,
 }
 
 // Handlers
