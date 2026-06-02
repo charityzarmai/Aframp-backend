@@ -68,6 +68,9 @@ mod cbdc;
 
 mod capacity;
 
+// Regulatory Examination Support & Evidence Package
+mod regulatory_evidence;
+
 // Imports
 use std::sync::Arc;
 use crate::config::AppConfig;
@@ -1909,6 +1912,23 @@ async fn main() -> anyhow::Result<()> {
         Router::new()
     };
 
+    // ── Regulatory Examination Support & Evidence Package ─────────────────────
+    let regulatory_evidence_routes = if let (Some(ref pool), Some(ref writer)) = (db_pool.as_ref(), audit_writer.as_ref()) {
+        let reg_repo = std::sync::Arc::new(regulatory_evidence::RegulatoryEvidenceRepository::new(pool.clone()));
+        let reg_service = std::sync::Arc::new(regulatory_evidence::RegulatoryEvidenceService::new(
+            reg_repo,
+            writer.clone(),
+        ));
+        let reg_state = std::sync::Arc::new(regulatory_evidence::RegulatoryEvidenceState {
+            service: reg_service,
+        });
+        info!("📋 Regulatory evidence package routes enabled");
+        regulatory_evidence::regulatory_evidence_routes(reg_state)
+    } else {
+        info!("⏭️  Skipping regulatory evidence routes (no database)");
+        Router::new()
+    };
+
     // ── Compliance Effectiveness Reporting (AML/KYC KPI Reports) ─────────────
     let compliance_effectiveness_routes = if let Some(ref pool) = db_pool {
         let ce_repo = std::sync::Arc::new(
@@ -2652,6 +2672,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(audit_routes)
         .merge(auditor_portal_routes)
         .merge(sar_routes)
+        .merge(regulatory_evidence_routes)
         .merge(compliance_effectiveness_routes)
         .merge(kyb_routes)
         .merge(key_rotation_routes)
