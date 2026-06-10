@@ -227,7 +227,7 @@ COMMENT ON TABLE production_access_requests IS 'Production access requests for a
 DO $$ BEGIN COMMENT ON COLUMN production_access_requests.application_id IS 'Reference to application'; EXCEPTION WHEN undefined_column OR undefined_table THEN NULL; END $$;
 DO $$ BEGIN COMMENT ON COLUMN production_access_requests.developer_account_id IS 'Reference to developer account'; EXCEPTION WHEN undefined_column OR undefined_table THEN NULL; END $$;
 DO $$ BEGIN COMMENT ON COLUMN production_access_requests.production_use_case IS 'Detailed production use case'; EXCEPTION WHEN undefined_column OR undefined_table THEN NULL; END $$;
-DO $$ BEGIN COMMENT ON COLUMN production_access_requests.expected_transaction_volume TEXT IS 'Expected monthly transaction volume'; EXCEPTION WHEN undefined_column OR undefined_table THEN NULL; END $$;
+DO $$ BEGIN COMMENT ON COLUMN production_access_requests.expected_transaction_volume IS 'Expected monthly transaction volume'; EXCEPTION WHEN undefined_column OR undefined_table THEN NULL; END $$;
 DO $$ BEGIN COMMENT ON COLUMN production_access_requests.supported_countries IS 'List of supported countries'; EXCEPTION WHEN undefined_column OR undefined_table THEN NULL; END $$;
 DO $$ BEGIN COMMENT ON COLUMN production_access_requests.business_details IS 'Additional business information'; EXCEPTION WHEN undefined_column OR undefined_table THEN NULL; END $$;
 DO $$ BEGIN COMMENT ON COLUMN production_access_requests.status IS 'Request status'; EXCEPTION WHEN undefined_column OR undefined_table THEN NULL; END $$;

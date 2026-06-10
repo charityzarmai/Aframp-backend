@@ -116,10 +116,10 @@ CREATE INDEX IF NOT EXISTS idx_transactions_compliance_check
 ON transactions(type, created_at DESC)
 WHERE type IN ('onramp', 'offramp', 'bill_payment');
 
--- Index for audit ledger queries by timestamp range
+-- Index for audit ledger queries by timestamp range (no NOW() - not immutable in predicates)
 CREATE INDEX IF NOT EXISTS idx_audit_ledger_timestamp_range
 ON audit_ledger(timestamp DESC)
-WHERE timestamp > NOW() - INTERVAL '90 days';
+WHERE timestamp IS NOT NULL;
 
 -- Index for correlation queries
 CREATE INDEX IF NOT EXISTS idx_audit_ledger_correlation_timestamp
@@ -135,10 +135,10 @@ CREATE INDEX IF NOT EXISTS idx_settlement_batches_pending
 ON settlement_batches(created_at DESC)
 WHERE status IN ('pending', 'processing');
 
--- Index for recent transactions by wallet (very hot)
+-- Index for recent transactions by wallet
 CREATE INDEX IF NOT EXISTS idx_transactions_recent_by_wallet
 ON transactions(wallet_address, created_at DESC)
-WHERE created_at > NOW() - INTERVAL '7 days';
+WHERE created_at IS NOT NULL;
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Statistics for Query Planner

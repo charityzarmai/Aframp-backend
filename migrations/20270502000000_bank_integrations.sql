@@ -31,7 +31,7 @@ CREATE INDEX idx_bank_integrations_code ON bank_integrations (partner_code);
 -- Virtual Accounts: Track generated dedicated inbound payment accounts
 CREATE TABLE virtual_accounts (
     id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id                 UUID NOT NULL REFERENCES kyc_records(consumer_id),
+    user_id                 UUID NOT NULL REFERENCES kyc_records(id),
     bank_integration_id     UUID REFERENCES bank_integrations(id),
     virtual_account_number  TEXT NOT NULL UNIQUE,
     virtual_account_name    TEXT NOT NULL,
@@ -59,14 +59,14 @@ CREATE INDEX idx_virtual_accounts_tracking ON virtual_accounts (settlement_track
 CREATE TABLE fiat_settlements (
     id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     virtual_account_id      UUID REFERENCES virtual_accounts(id),
-    user_id                 UUID NOT NULL REFERENCES kyc_records(consumer_id),
+    user_id                 UUID NOT NULL REFERENCES kyc_records(id),
     bank_integration_id     UUID REFERENCES bank_integrations(id),
     bank_transaction_id     TEXT NOT NULL,
     bank_reference          TEXT,
     amount                  DECIMAL(20, 2) NOT NULL,
     currency                TEXT NOT NULL DEFAULT 'NGN',
-    cn gn_amount            DECIMAL(20, 8),
-    cn gn_minted            BOOLEAN DEFAULT FALSE,
+    cngn_amount            DECIMAL(20, 8),
+    cngn_minted            BOOLEAN DEFAULT FALSE,
     wallet_address          TEXT,
     settlement_status       TEXT NOT NULL DEFAULT 'pending', -- 'pending', 'confirmed', 'minting', 'completed', 'failed'
     settlement_error        TEXT,

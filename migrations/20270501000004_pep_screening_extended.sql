@@ -11,7 +11,7 @@ ALTER TABLE pep_matches
 -- Create PEP profiles table (central record for each PEP)
 CREATE TABLE pep_profiles (
     pep_profile_id       UUID PRIMARY KEY,
-    subject_kyc_id       UUID NOT NULL REFERENCES kyc_records(consumer_id),
+    subject_kyc_id       UUID NOT NULL REFERENCES kyc_records(id),
     pep_category         TEXT NOT NULL, -- 'domestic_pep', 'foreign_pep', 'international_org_pep'
     pep_position_title   TEXT NOT NULL,
     pep_organization     TEXT,
@@ -37,7 +37,7 @@ CREATE INDEX idx_pep_profiles_edd ON pep_profiles (edd_status);
 CREATE TABLE pep_family_members (
     family_member_id     UUID PRIMARY KEY,
     pep_profile_id       UUID NOT NULL REFERENCES pep_profiles(pep_profile_id) ON DELETE CASCADE,
-    family_member_kyc_id UUID NOT NULL REFERENCES kyc_records(consumer_id),
+    family_member_kyc_id UUID NOT NULL REFERENCES kyc_records(id),
     relationship_type    TEXT NOT NULL, -- 'spouse', 'child', 'parent', 'sibling'
     screening_status     TEXT NOT NULL DEFAULT 'pending', -- 'pending', 'screened', 'confirmed', 'cleared'
     created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -50,7 +50,7 @@ CREATE INDEX idx_pep_family_kyc ON pep_family_members (family_member_kyc_id);
 CREATE TABLE pep_close_associates (
     associate_id         UUID PRIMARY KEY,
     pep_profile_id       UUID NOT NULL REFERENCES pep_profiles(pep_profile_id) ON DELETE CASCADE,
-    associate_kyc_id     UUID NOT NULL REFERENCES kyc_records(consumer_id),
+    associate_kyc_id     UUID NOT NULL REFERENCES kyc_records(id),
     association_type     TEXT NOT NULL, -- 'business_partner', 'known_associate'
     screening_status     TEXT NOT NULL DEFAULT 'pending',
     created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
