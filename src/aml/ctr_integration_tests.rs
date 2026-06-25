@@ -185,7 +185,7 @@ mod integration_tests {
 
     /// Test WAT timezone boundaries
     #[test]
-    fn test_wat_timezone_boundaries() {
+    fn test_wat_timezone_boundaries() -> anyhow::Result<()> {
         // This test verifies that aggregation windows use WAT (UTC+1) correctly
         // and that transactions near midnight are assigned to the correct day
 
@@ -193,52 +193,59 @@ mod integration_tests {
         use chrono_tz::Africa::Lagos as WAT;
 
         // Test case 1: Transaction at 23:30 UTC should be in next day WAT
-        let utc_time = chrono::Utc.with_ymd_and_hms(2024, 1, 15, 23, 30, 0).unwrap();
+        let utc_time = chrono::Utc.with_ymd_and_hms(2024, 1, 15, 23, 30, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("Invalid date"))?;
         let wat_time = utc_time.with_timezone(&WAT);
         
         // 23:30 UTC = 00:30 WAT (next day)
         assert_eq!(wat_time.day(), 16);
 
         // Test case 2: Transaction at 22:30 UTC should be in same day WAT
-        let utc_time = chrono::Utc.with_ymd_and_hms(2024, 1, 15, 22, 30, 0).unwrap();
+        let utc_time = chrono::Utc.with_ymd_and_hms(2024, 1, 15, 22, 30, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("Invalid date"))?;
         let wat_time = utc_time.with_timezone(&WAT);
         
         // 22:30 UTC = 23:30 WAT (same day)
         assert_eq!(wat_time.day(), 15);
+        Ok(())
     }
 
     /// Test NGN conversion accuracy
     #[test]
-    fn test_ngn_conversion_accuracy() {
+    fn test_ngn_conversion_accuracy() -> anyhow::Result<()> {
         // Test that NGN conversions maintain precision
-        let usd_amount = Decimal::from_str("1000.50").unwrap();
-        let exchange_rate = Decimal::from_str("1500.75").unwrap();
+        let usd_amount = Decimal::from_str("1000.50")?;
+        let exchange_rate = Decimal::from_str("1500.75")?;
         let ngn_amount = usd_amount * exchange_rate;
 
         // Verify precision is maintained
-        assert_eq!(ngn_amount, Decimal::from_str("1501501.375").unwrap());
+        assert_eq!(ngn_amount, Decimal::from_str("1501501.375")?);
 
         // Verify rounding behavior
         let rounded = ngn_amount.round_dp(2);
-        assert_eq!(rounded, Decimal::from_str("1501501.38").unwrap());
+        assert_eq!(rounded, Decimal::from_str("1501501.38")?);
+        Ok(())
     }
 
     /// Test threshold detection edge cases
     #[test]
-    fn test_threshold_detection_edge_cases() {
-        let threshold = Decimal::from_str("5000000").unwrap();
+    fn test_threshold_detection_edge_cases() -> anyhow::Result<()> {
+        let threshold = Decimal::from_str("5000000")?;
 
         // Exactly at threshold
-        let amount_at = Decimal::from_str("5000000.00").unwrap();
+        let amount_at = Decimal::from_str("5000000.00")?;
         assert!(amount_at >= threshold);
 
         // One kobo below threshold
-        let amount_below = Decimal::from_str("4999999.99").unwrap();
+        let amount_below = Decimal::from_str("4999999.99")?;
         assert!(amount_below < threshold);
 
         // One kobo above threshold
-        let amount_above = Decimal::from_str("5000000.01").unwrap();
+        let amount_above = Decimal::from_str("5000000.01")?;
         assert!(amount_above >= threshold);
+        Ok(())
     }
 
     /// Test deduplication key generation

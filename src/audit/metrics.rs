@@ -10,34 +10,34 @@ static AUDIT_HASH_CHAIN_DURATION_SECONDS: OnceLock<HistogramVec> = OnceLock::new
 static AUDIT_REPLICATION_LAG_SECONDS: OnceLock<Gauge> = OnceLock::new();
 static AUDIT_OVERFLOW_FALLBACKS_TOTAL: OnceLock<CounterVec> = OnceLock::new();
 
-pub fn entries_total() -> &'static CounterVec {
+pub fn entries_total() -> anyhow::Result<&'static CounterVec> {
     AUDIT_ENTRIES_TOTAL
         .get()
-        .expect("audit metrics not initialised")
+        .ok_or_else(|| anyhow::anyhow!("audit metrics not initialised"))
 }
 
-pub fn writer_channel_utilisation() -> &'static Gauge {
+pub fn writer_channel_utilisation() -> anyhow::Result<&'static Gauge> {
     AUDIT_WRITER_CHANNEL_UTILISATION
         .get()
-        .expect("audit metrics not initialised")
+        .ok_or_else(|| anyhow::anyhow!("audit metrics not initialised"))
 }
 
-pub fn hash_chain_duration_seconds() -> &'static HistogramVec {
+pub fn hash_chain_duration_seconds() -> anyhow::Result<&'static HistogramVec> {
     AUDIT_HASH_CHAIN_DURATION_SECONDS
         .get()
-        .expect("audit metrics not initialised")
+        .ok_or_else(|| anyhow::anyhow!("audit metrics not initialised"))
 }
 
-pub fn replication_lag_seconds() -> &'static Gauge {
+pub fn replication_lag_seconds() -> anyhow::Result<&'static Gauge> {
     AUDIT_REPLICATION_LAG_SECONDS
         .get()
-        .expect("audit metrics not initialised")
+        .ok_or_else(|| anyhow::anyhow!("audit metrics not initialised"))
 }
 
-pub fn overflow_fallbacks_total() -> &'static CounterVec {
+pub fn overflow_fallbacks_total() -> anyhow::Result<&'static CounterVec> {
     AUDIT_OVERFLOW_FALLBACKS_TOTAL
         .get()
-        .expect("audit metrics not initialised")
+        .ok_or_else(|| anyhow::anyhow!("audit metrics not initialised"))
 }
 
 pub fn register(r: &Registry) {

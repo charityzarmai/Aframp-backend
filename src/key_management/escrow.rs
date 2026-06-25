@@ -161,32 +161,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_split_reconstruct_exact_threshold() {
+    fn test_split_reconstruct_exact_threshold() -> Result<(), EscrowError> {
         let secret = b"super-secret-key-material-32byt";
-        let shares = split(secret, 3, 5).unwrap();
+        let shares = split(secret, 3, 5)?;
         assert_eq!(shares.len(), 5);
 
-        let reconstructed = reconstruct(&shares[..3], 3).unwrap();
+        let reconstructed = reconstruct(&shares[..3], 3)?;
         assert_eq!(reconstructed.as_slice(), secret);
+        Ok(())
     }
 
     #[test]
-    fn test_split_reconstruct_all_shares() {
+    fn test_split_reconstruct_all_shares() -> Result<(), EscrowError> {
         let secret = b"another-secret-value";
-        let shares = split(secret, 2, 3).unwrap();
-        let reconstructed = reconstruct(&shares, 2).unwrap();
+        let shares = split(secret, 2, 3)?;
+        let reconstructed = reconstruct(&shares, 2)?;
         assert_eq!(reconstructed.as_slice(), secret);
+        Ok(())
     }
 
     #[test]
-    fn test_insufficient_shares_returns_error() {
+    fn test_insufficient_shares_returns_error() -> Result<(), EscrowError> {
         let secret = b"test-secret";
-        let shares = split(secret, 3, 5).unwrap();
+        let shares = split(secret, 3, 5)?;
         let result = reconstruct(&shares[..2], 3);
         assert!(matches!(
             result,
             Err(EscrowError::InsufficientShares { .. })
         ));
+        Ok(())
     }
 
     #[test]
@@ -196,29 +199,29 @@ mod tests {
     }
 
     #[test]
-    fn test_single_byte_secret() {
+    fn test_single_byte_secret() -> Result<(), EscrowError> {
         let secret = b"\xAB";
-        let shares = split(secret, 2, 3).unwrap();
-        let reconstructed = reconstruct(&shares[..2], 2).unwrap();
+        let shares = split(secret, 2, 3)?;
+        let reconstructed = reconstruct(&shares[..2], 2)?;
         assert_eq!(reconstructed.as_slice(), secret);
+        Ok(())
     }
 
     #[test]
-    fn test_different_share_subsets_reconstruct_same_secret() {
+    fn test_different_share_subsets_reconstruct_same_secret() -> Result<(), EscrowError> {
         let secret = b"consistent-reconstruction";
-        let shares = split(secret, 3, 5).unwrap();
+        let shares = split(secret, 3, 5)?;
 
         let r1 = reconstruct(
             &[shares[0].clone(), shares[1].clone(), shares[2].clone()],
             3,
-        )
-        .unwrap();
+        )?;
         let r2 = reconstruct(
             &[shares[1].clone(), shares[3].clone(), shares[4].clone()],
             3,
-        )
-        .unwrap();
+        )?;
         assert_eq!(r1.as_slice(), secret);
         assert_eq!(r2.as_slice(), secret);
+        Ok(())
     }
 }
