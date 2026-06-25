@@ -97,9 +97,10 @@ pub async fn verify_mfa_handler(
 
 pub async fn setup_mfa_handler(
     State(state): State<Arc<AdminAuthState>>,
+    req: axum::http::Request<axum::body::Body>,
     Json(request): Json<MfaSetupRequest>,
 ) -> Result<Json<ApiResponse<MfaSetupResponse>>, Error> {
-    let auth_context = get_auth_context(&axum::extract::Request::builder().body(()).unwrap())?;
+    let auth_context = get_auth_context(&req)?;
 
     let response = state
         .auth_service
@@ -115,9 +116,10 @@ pub async fn setup_mfa_handler(
 
 pub async fn confirm_mfa_setup_handler(
     State(state): State<Arc<AdminAuthState>>,
+    req: axum::http::Request<axum::body::Body>,
     Json(request): Json<serde_json::Value>,
 ) -> Result<Json<ApiResponse<()>>, Error> {
-    let auth_context = get_auth_context(&axum::extract::Request::builder().body(()).unwrap())?;
+    let auth_context = get_auth_context(&req)?;
 
     let method = request
         .get("method")
@@ -143,9 +145,10 @@ pub async fn confirm_mfa_setup_handler(
 
 pub async fn change_password_handler(
     State(state): State<Arc<AdminAuthState>>,
+    req: axum::http::Request<axum::body::Body>,
     Json(request): Json<PasswordChangeRequest>,
 ) -> Result<Json<ApiResponse<()>>, Error> {
-    let auth_context = get_auth_context(&axum::extract::Request::builder().body(()).unwrap())?;
+    let auth_context = get_auth_context(&req)?;
 
     state
         .auth_service
@@ -162,9 +165,10 @@ pub async fn change_password_handler(
 // Admin Account Management Handlers
 pub async fn create_admin_account_handler(
     State(services): State<Arc<AdminServices>>,
+    req: axum::http::Request<axum::body::Body>,
     Json(request): Json<CreateAdminAccountRequest>,
 ) -> Result<Json<ApiResponse<AdminAccount>>, Error> {
-    let auth_context = get_auth_context(&axum::extract::Request::builder().body(()).unwrap())?;
+    let auth_context = get_auth_context(&req)?;
     let ip_address = "127.0.0.1";
     let user_agent = "Unknown";
 
@@ -183,9 +187,10 @@ pub async fn create_admin_account_handler(
 pub async fn update_admin_role_handler(
     State(services): State<Arc<AdminServices>>,
     Path(admin_id): Path<Uuid>,
+    req: axum::http::Request<axum::body::Body>,
     Json(request): Json<serde_json::Value>,
 ) -> Result<Json<ApiResponse<()>>, Error> {
-    let auth_context = get_auth_context(&axum::extract::Request::builder().body(()).unwrap())?;
+    let auth_context = get_auth_context(&req)?;
     let ip_address = "127.0.0.1";
     let user_agent = "Unknown";
 
@@ -224,8 +229,9 @@ pub async fn update_admin_role_handler(
 pub async fn suspend_admin_account_handler(
     State(services): State<Arc<AdminServices>>,
     Path(admin_id): Path<Uuid>,
+    req: axum::http::Request<axum::body::Body>,
 ) -> Result<Json<ApiResponse<()>>, Error> {
-    let auth_context = get_auth_context(&axum::extract::Request::builder().body(()).unwrap())?;
+    let auth_context = get_auth_context(&req)?;
     let ip_address = "127.0.0.1";
     let user_agent = "Unknown";
 
@@ -244,8 +250,9 @@ pub async fn suspend_admin_account_handler(
 pub async fn reinstate_admin_account_handler(
     State(services): State<Arc<AdminServices>>,
     Path(admin_id): Path<Uuid>,
+    req: axum::http::Request<axum::body::Body>,
 ) -> Result<Json<ApiResponse<()>>, Error> {
-    let auth_context = get_auth_context(&axum::extract::Request::builder().body(()).unwrap())?;
+    let auth_context = get_auth_context(&req)?;
     let ip_address = "127.0.0.1";
     let user_agent = "Unknown";
 
@@ -290,14 +297,17 @@ pub async fn list_admin_accounts_handler(
         .list_admin_accounts(limit, offset)
         .await?;
 
+    let total = accounts.len() as i64; // Get actual count in real implementation
+    let has_next = accounts.len() == limit as usize;
+
     Ok(Json(PaginatedResponse {
         success: true,
         data: accounts,
         pagination: Pagination {
-            total: accounts.len() as i64, // Get actual count in real implementation
+            total,
             limit,
             offset,
-            has_next: accounts.len() == limit as usize,
+            has_next,
             has_prev: offset > 0,
         },
         message: None,
@@ -319,8 +329,9 @@ pub async fn get_admin_statistics_handler(
 // Session Management Handlers
 pub async fn get_active_sessions_handler(
     State(services): State<Arc<AdminServices>>,
+    req: axum::http::Request<axum::body::Body>,
 ) -> Result<Json<ApiResponse<Vec<ActiveAdminSession>>>, Error> {
-    let auth_context = get_auth_context(&axum::extract::Request::builder().body(()).unwrap())?;
+    let auth_context = get_auth_context(&req)?;
 
     let sessions = services
         .session_service
@@ -337,8 +348,9 @@ pub async fn get_active_sessions_handler(
 pub async fn terminate_session_handler(
     State(services): State<Arc<AdminServices>>,
     Path(session_id): Path<Uuid>,
+    req: axum::http::Request<axum::body::Body>,
 ) -> Result<Json<ApiResponse<()>>, Error> {
-    let auth_context = get_auth_context(&axum::extract::Request::builder().body(()).unwrap())?;
+    let auth_context = get_auth_context(&req)?;
     let ip_address = "127.0.0.1";
     let user_agent = "Unknown";
 
@@ -356,8 +368,9 @@ pub async fn terminate_session_handler(
 
 pub async fn terminate_all_sessions_handler(
     State(services): State<Arc<AdminServices>>,
+    req: axum::http::Request<axum::body::Body>,
 ) -> Result<Json<ApiResponse<()>>, Error> {
-    let auth_context = get_auth_context(&axum::extract::Request::builder().body(()).unwrap())?;
+    let auth_context = get_auth_context(&req)?;
     let ip_address = "127.0.0.1";
     let user_agent = "Unknown";
 
@@ -383,8 +396,9 @@ pub async fn terminate_all_sessions_handler(
 pub async fn get_audit_trail_handler(
     State(services): State<Arc<AdminServices>>,
     Query(query): Query<AuditQuery>,
+    req: axum::http::Request<axum::body::Body>,
 ) -> Result<Json<PaginatedResponse<AdminAuditTrailDetailed>>, Error> {
-    let auth_context = get_auth_context(&axum::extract::Request::builder().body(()).unwrap())?;
+    let auth_context = get_auth_context(&req)?;
 
     // Only super admins can access audit trail
     if auth_context.role != AdminRole::SuperAdmin {
@@ -428,14 +442,17 @@ pub async fn get_audit_trail_handler(
         )
         .await?;
 
+    let total = audit_entries.len() as i64; // Get actual count in real implementation
+    let has_next = audit_entries.len() == limit as usize;
+
     Ok(Json(PaginatedResponse {
         success: true,
         data: audit_entries,
         pagination: Pagination {
-            total: audit_entries.len() as i64, // Get actual count in real implementation
+            total,
             limit,
             offset,
-            has_next: audit_entries.len() == limit as usize,
+            has_next,
             has_prev: offset > 0,
         },
         message: None,
@@ -444,8 +461,9 @@ pub async fn get_audit_trail_handler(
 
 pub async fn verify_audit_trail_handler(
     State(services): State<Arc<AdminServices>>,
+    req: axum::http::Request<axum::body::Body>,
 ) -> Result<Json<ApiResponse<AuditTrailVerificationResult>>, Error> {
-    let auth_context = get_auth_context(&axum::extract::Request::builder().body(()).unwrap())?;
+    let auth_context = get_auth_context(&req)?;
 
     // Only super admins can verify audit trail
     if auth_context.role != AdminRole::SuperAdmin {
@@ -464,9 +482,10 @@ pub async fn verify_audit_trail_handler(
 // Sensitive Action Handlers
 pub async fn request_sensitive_action_confirmation_handler(
     State(services): State<Arc<AdminServices>>,
+    req: axum::http::Request<axum::body::Body>,
     Json(request): Json<SensitiveActionConfirmationRequest>,
 ) -> Result<Json<ApiResponse<AdminSensitiveConfirmation>>, Error> {
-    let auth_context = get_auth_context(&axum::extract::Request::builder().body(()).unwrap())?;
+    let auth_context = get_auth_context(&req)?;
 
     let confirmation = services
         .sensitive_action_service
@@ -483,9 +502,10 @@ pub async fn request_sensitive_action_confirmation_handler(
 pub async fn execute_sensitive_action_handler(
     State(services): State<Arc<AdminServices>>,
     Path(action_type): Path<String>,
+    req: axum::http::Request<axum::body::Body>,
     Json(request): Json<serde_json::Value>,
 ) -> Result<Json<ApiResponse<()>>, Error> {
-    let auth_context = get_auth_context(&axum::extract::Request::builder().body(()).unwrap())?;
+    let auth_context = get_auth_context(&req)?;
 
     // This would execute the actual sensitive action
     // For now, we'll just confirm and log it
@@ -511,8 +531,9 @@ pub async fn execute_sensitive_action_handler(
 pub async fn get_security_events_handler(
     State(services): State<Arc<AdminServices>>,
     Query(query): Query<serde_json::Value>,
+    req: axum::http::Request<axum::body::Body>,
 ) -> Result<Json<ApiResponse<Vec<AdminSecurityEvent>>>, Error> {
-    let auth_context = get_auth_context(&axum::extract::Request::builder().body(()).unwrap())?;
+    let auth_context = get_auth_context(&req)?;
 
     // Only security admins and super admins can access security events
     if !matches!(
@@ -541,8 +562,9 @@ pub async fn get_security_events_handler(
 pub async fn resolve_security_event_handler(
     State(services): State<Arc<AdminServices>>,
     Path(event_id): Path<Uuid>,
+    req: axum::http::Request<axum::body::Body>,
 ) -> Result<Json<ApiResponse<()>>, Error> {
-    let auth_context = get_auth_context(&axum::extract::Request::builder().body(()).unwrap())?;
+    let auth_context = get_auth_context(&req)?;
 
     services
         .security_service
@@ -558,8 +580,9 @@ pub async fn resolve_security_event_handler(
 
 pub async fn get_security_statistics_handler(
     State(services): State<Arc<AdminServices>>,
+    req: axum::http::Request<axum::body::Body>,
 ) -> Result<Json<ApiResponse<SecurityMonitoringStats>>, Error> {
-    let auth_context = get_auth_context(&axum::extract::Request::builder().body(()).unwrap())?;
+    let auth_context = get_auth_context(&req)?;
 
     // Only security admins and super admins can access security statistics
     if !matches!(

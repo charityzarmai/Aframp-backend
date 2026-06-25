@@ -150,15 +150,15 @@ mod defi_analytics_integration_tests {
         models::{DefiPlatformSnapshot, DefiLendingSnapshot},
     };
 
-    async fn setup_pool() -> PgPool {
+    async fn setup_pool() -> Result<PgPool, sqlx::Error> {
         let url = std::env::var("DATABASE_URL")
             .unwrap_or_else(|_| "postgres://postgres:postgres@localhost/aframp_test".to_string());
-        PgPool::connect(&url).await.expect("DB connect")
+        PgPool::connect(&url).await
     }
 
     #[tokio::test]
-    async fn test_platform_snapshot_insert_and_retrieve() {
-        let pool = setup_pool().await;
+    async fn test_platform_snapshot_insert_and_retrieve() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_pool().await?;
         let repo = Arc::new(DefiAnalyticsRepository::new(Arc::new(pool)));
 
         let now = Utc::now();
@@ -180,18 +180,18 @@ mod defi_analytics_integration_tests {
             created_at: now,
         };
 
-        repo.insert_platform_snapshot(&snapshot).await.expect("insert snapshot");
+        repo.insert_platform_snapshot(&snapshot).await?;
 
-        let retrieved = repo.get_latest_platform_snapshot().await.expect("get snapshot");
-        assert!(retrieved.is_some());
-        let s = retrieved.unwrap();
+        let retrieved = repo.get_latest_platform_snapshot().await?;
+        let s = retrieved.ok_or("expected a platform snapshot but got None")?;
         assert_eq!(s.active_savings_positions, 50);
         assert!((s.weighted_avg_yield_rate - 0.08).abs() < 1e-6);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_lending_snapshot_insert_and_retrieve() {
-        let pool = setup_pool().await;
+    async fn test_lending_snapshot_insert_and_retrieve() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_pool().await?;
         let repo = Arc::new(DefiAnalyticsRepository::new(Arc::new(pool)));
 
         let now = Utc::now();
@@ -211,18 +211,18 @@ mod defi_analytics_integration_tests {
             created_at: now,
         };
 
-        repo.insert_lending_snapshot(&snapshot).await.expect("insert lending snapshot");
+        repo.insert_lending_snapshot(&snapshot).await?;
 
-        let retrieved = repo.get_latest_lending_snapshot().await.expect("get lending snapshot");
-        assert!(retrieved.is_some());
-        let s = retrieved.unwrap();
+        let retrieved = repo.get_latest_lending_snapshot().await?;
+        let s = retrieved.ok_or("expected a lending snapshot but got None")?;
         assert_eq!(s.liquidation_count, 2);
         assert!((s.avg_health_factor - 1.8).abs() < 1e-6);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_strategy_snapshot_insert_and_retrieve() {
-        let pool = setup_pool().await;
+    async fn test_strategy_snapshot_insert_and_retrieve() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_pool().await?;
         let repo = Arc::new(DefiAnalyticsRepository::new(Arc::new(pool)));
 
         let strategy_id = Uuid::new_v4();
@@ -245,17 +245,18 @@ mod defi_analytics_integration_tests {
             created_at: now,
         };
 
-        repo.insert_strategy_snapshot(&snapshot).await.expect("insert strategy snapshot");
+        repo.insert_strategy_snapshot(&snapshot).await?;
 
-        let snapshots = repo.get_strategy_snapshots(strategy_id, 10).await.expect("get strategy snapshots");
+        let snapshots = repo.get_strategy_snapshots(strategy_id, 10).await?;
         assert!(!snapshots.is_empty());
         assert!((snapshots[0].effective_yield_rate - 0.08).abs() < 1e-6);
         assert!((snapshots[0].benchmark_delta - 0.04).abs() < 1e-6);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_user_snapshot_upsert() {
-        let pool = setup_pool().await;
+    async fn test_user_snapshot_upsert() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_pool().await?;
         let repo = Arc::new(DefiAnalyticsRepository::new(Arc::new(pool)));
 
         let wallet_id = Uuid::new_v4();
@@ -277,33 +278,33 @@ mod defi_analytics_integration_tests {
             created_at: now,
         };
 
-        repo.upsert_user_snapshot(&snapshot).await.expect("upsert user snapshot");
+        repo.upsert_user_snapshot(&snapshot).await?;
 
-        let retrieved = repo.get_user_latest_snapshot(wallet_id).await.expect("get user snapshot");
-        assert!(retrieved.is_some());
-        let s = retrieved.unwrap();
+        let retrieved = repo.get_user_latest_snapshot(wallet_id).await?;
+        let s = retrieved.ok_or("expected a user snapshot but got None")?;
         assert_eq!(s.wallet_id, wallet_id);
         assert!((s.net_yield_rate - 0.08).abs() < 1e-6);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_report_generation() {
-        let pool = setup_pool().await;
+    async fn test_report_generation() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_pool().await?;
         let repo = Arc::new(DefiAnalyticsRepository::new(Arc::new(pool.clone())));
         let svc = Arc::new(DefiAnalyticsService::new(repo));
 
-        let report = svc.generate_report("weekly").await.expect("generate report");
+        let report = svc.generate_report("weekly").await?;
         assert_eq!(report.report_type, "weekly");
         // After generation the status should be 'ready'
-        let reports = svc.list_reports().await.expect("list reports");
-        let found = reports.iter().find(|r| r.report_id == report.report_id);
-        assert!(found.is_some());
+        let reports = svc.list_reports().await?;
+        assert!(reports.iter().any(|r| r.report_id == report.report_id));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_analytics_caching_invalidation() {
+    async fn test_analytics_caching_invalidation() -> Result<(), Box<dyn std::error::Error>> {
         // Verify that two consecutive platform snapshots are both persisted
-        let pool = setup_pool().await;
+        let pool = setup_pool().await?;
         let repo = Arc::new(DefiAnalyticsRepository::new(Arc::new(pool)));
 
         let now = Utc::now();
@@ -325,10 +326,11 @@ mod defi_analytics_integration_tests {
                 platform_defi_revenue: sqlx::types::BigDecimal::from(1_000i64),
                 created_at: now,
             };
-            repo.insert_platform_snapshot(&s).await.expect("insert");
+            repo.insert_platform_snapshot(&s).await?;
         }
 
-        let history = repo.get_platform_snapshot_history(10).await.expect("history");
+        let history = repo.get_platform_snapshot_history(10).await?;
         assert!(history.len() >= 2);
+        Ok(())
     }
 }
