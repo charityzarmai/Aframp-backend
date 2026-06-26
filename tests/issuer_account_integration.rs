@@ -5,6 +5,11 @@
 //!   STELLAR_HORIZON_URL=https://horizon-testnet.stellar.org  (optional override)
 //!
 //! Tests that require funded accounts are skipped when the accounts are not funded.
+//!
+//! # Note on unwrap/expect usage
+//! All `unwrap()` and `expect()` calls in this file are intentional test-fixture
+//! boilerplate. Panicking on setup failure is correct in tests — it produces an
+//! immediate, clear failure message. No production code paths are involved.
 
 use Bitmesh_backend::chains::stellar::{
     client::StellarClient,
