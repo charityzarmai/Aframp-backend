@@ -186,15 +186,7 @@ fn valid_sha256_signature_verifies() {
     ];
     let body = br#"{"from_currency":"KES","to_asset":"CNGN","amount":"5000"}"#;
 
-    let sig_header = sign_request(
-        HmacAlgorithm::Sha256,
-        "POST",
-        "/api/onramp/quote",
-        "",
-        headers_slice,
-        body,
-        secret,
-    );
+    let sig_header = sign_request($$$).unwrap();
     let parsed = parse_signature_header_pub(&sig_header).unwrap();
 
     let signing_key = derive_signing_key(secret);
@@ -228,15 +220,7 @@ fn valid_sha512_signature_verifies() {
     ];
     let body = br#"{"wallet_address":"GXXX","amount":"100"}"#;
 
-    let sig_header = sign_request(
-        HmacAlgorithm::Sha512,
-        "POST",
-        "/api/onramp/initiate",
-        "",
-        headers_slice,
-        body,
-        secret,
-    );
+    let sig_header = sign_request($$$).unwrap();
     let parsed = parse_signature_header_pub(&sig_header).unwrap();
 
     let signing_key = derive_signing_key(secret);
@@ -271,15 +255,7 @@ fn tampered_body_signature_mismatch() {
     let original = br#"{"amount":"100"}"#;
     let tampered = br#"{"amount":"99999"}"#;
 
-    let sig_header = sign_request(
-        HmacAlgorithm::Sha256,
-        "POST",
-        "/api/onramp/quote",
-        "",
-        headers_slice,
-        original,
-        secret,
-    );
+    let sig_header = sign_request($$$).unwrap();
     let parsed = parse_signature_header_pub(&sig_header).unwrap();
 
     let signing_key = derive_signing_key(secret);
@@ -318,15 +294,7 @@ fn tampered_key_id_header_signature_mismatch() {
     ];
     let body = br#"{"amount":"100"}"#;
 
-    let sig_header = sign_request(
-        HmacAlgorithm::Sha256,
-        "POST",
-        "/api/onramp/quote",
-        "",
-        original_headers,
-        body,
-        secret,
-    );
+    let sig_header = sign_request($$$).unwrap();
     let parsed = parse_signature_header_pub(&sig_header).unwrap();
 
     let signing_key = derive_signing_key(secret);

@@ -108,13 +108,17 @@ pub struct HmacSigningState {
 pub fn derive_signing_key(api_secret: &[u8]) -> Vec<u8> {
     // HKDF extract: PRK = HMAC-SHA256(salt, ikm)
     type HmacSha256 = Hmac<Sha256>;
+    // SAFETY: `new_from_slice` only fails for invalid key length; HMAC-SHA256
+    // accepts keys of any length, so this is structurally infallible.
     let mut extract_mac =
-        HmacSha256::new_from_slice(HKDF_SALT).expect("HMAC accepts any key length");
+        HmacSha256::new_from_slice(HKDF_SALT).expect("HMAC-SHA256 accepts any key length");
     extract_mac.update(api_secret);
     let prk = extract_mac.finalize().into_bytes();
 
     // HKDF expand: OKM = T(1) where T(1) = HMAC-SHA256(PRK, info || 0x01)
-    let mut expand_mac = HmacSha256::new_from_slice(&prk).expect("HMAC accepts any key length");
+    // SAFETY: prk is a fixed 32-byte output from the extract step above.
+    let mut expand_mac =
+        HmacSha256::new_from_slice(&prk).expect("HMAC-SHA256 accepts any key length");
     expand_mac.update(HKDF_INFO);
     expand_mac.update(&[0x01u8]);
     expand_mac.finalize().into_bytes().to_vec()
@@ -202,15 +206,17 @@ pub fn compute_signature(
     match algorithm {
         HmacAlgorithm::Sha256 => {
             type HmacSha256 = Hmac<Sha256>;
+            // SAFETY: HMAC-SHA256 accepts keys of any length; this is infallible.
             let mut mac =
-                HmacSha256::new_from_slice(signing_key).expect("HMAC accepts any key length");
+                HmacSha256::new_from_slice(signing_key).expect("HMAC-SHA256 accepts any key length");
             mac.update(canonical_request.as_bytes());
             hex::encode(mac.finalize().into_bytes())
         }
         HmacAlgorithm::Sha512 => {
             type HmacSha512 = Hmac<Sha512>;
+            // SAFETY: HMAC-SHA512 accepts keys of any length; this is infallible.
             let mut mac =
-                HmacSha512::new_from_slice(signing_key).expect("HMAC accepts any key length");
+                HmacSha512::new_from_slice(signing_key).expect("HMAC-SHA512 accepts any key length");
             mac.update(canonical_request.as_bytes());
             hex::encode(mac.finalize().into_bytes())
         }
@@ -437,7 +443,7 @@ pub fn sign_request(
     headers: &[(&str, &str)],
     body: &[u8],
     api_secret: &[u8],
-) -> String {
+) -> Result<String, &'static str> {
     let mut header_map = axum::http::HeaderMap::new();
     for (name, value) in headers {
         if let (Ok(n), Ok(v)) = (
@@ -449,8 +455,7 @@ pub fn sign_request(
     }
 
     let body_hash = sha256_hex(body);
-    let canonical = build_canonical_request(method, path, query, &header_map, &body_hash)
-        .expect("all required headers provided");
+    let canonical = build_canonical_request(method, path, query, &header_map, &body_hash)?;
 
     let signing_key = derive_signing_key(api_secret);
     let signature = compute_signature(algorithm, &signing_key, &canonical);
@@ -460,12 +465,12 @@ pub fn sign_request(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("0");
 
-    format!(
+    Ok(format!(
         "algorithm={},timestamp={},signature={}",
         algorithm.as_str(),
         timestamp,
         signature
-    )
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -687,7 +692,7 @@ mod tests {
             ],
             br#"{"amount":"100"}"#,
             SECRET,
-        );
+        ).unwrap();
         let parsed = parse_signature_header(&hdr).unwrap();
         assert_eq!(parsed.algorithm, HmacAlgorithm::Sha256);
         assert_eq!(parsed.timestamp, 1700000000);
@@ -702,24 +707,8 @@ mod tests {
             ("x-aframp-timestamp", "1700000000"),
         ];
         let body = br#"{"amount":"100"}"#;
-        let h256 = sign_request(
-            HmacAlgorithm::Sha256,
-            "POST",
-            "/test",
-            "",
-            headers,
-            body,
-            SECRET,
-        );
-        let h512 = sign_request(
-            HmacAlgorithm::Sha512,
-            "POST",
-            "/test",
-            "",
-            headers,
-            body,
-            SECRET,
-        );
+        let h256 = sign_request(HmacAlgorithm::Sha256, "POST", "/test", "", headers, body, SECRET).unwrap();
+        let h512 = sign_request(HmacAlgorithm::Sha512, "POST", "/test", "", headers, body, SECRET).unwrap();
         assert_ne!(h256, h512);
     }
 
@@ -730,24 +719,8 @@ mod tests {
             ("x-aframp-key-id", "key_abc"),
             ("x-aframp-timestamp", "1700000000"),
         ];
-        let original = sign_request(
-            HmacAlgorithm::Sha256,
-            "POST",
-            "/test",
-            "",
-            headers,
-            br#"{"amount":"100"}"#,
-            SECRET,
-        );
-        let tampered = sign_request(
-            HmacAlgorithm::Sha256,
-            "POST",
-            "/test",
-            "",
-            headers,
-            br#"{"amount":"9999"}"#,
-            SECRET,
-        );
+        let original = sign_request(HmacAlgorithm::Sha256, "POST", "/test", "", headers, br#"{"amount":"100"}"#, SECRET).unwrap();
+        let tampered = sign_request(HmacAlgorithm::Sha256, "POST", "/test", "", headers, br#"{"amount":"9999"}"#, SECRET).unwrap();
         assert_ne!(original, tampered);
     }
 
@@ -764,24 +737,8 @@ mod tests {
             ("x-aframp-timestamp", "1700000000"),
         ];
         let body = br#"{"amount":"100"}"#;
-        let s1 = sign_request(
-            HmacAlgorithm::Sha256,
-            "POST",
-            "/test",
-            "",
-            headers_original,
-            body,
-            SECRET,
-        );
-        let s2 = sign_request(
-            HmacAlgorithm::Sha256,
-            "POST",
-            "/test",
-            "",
-            headers_tampered,
-            body,
-            SECRET,
-        );
+        let s1 = sign_request(HmacAlgorithm::Sha256, "POST", "/test", "", headers_original, body, SECRET).unwrap();
+        let s2 = sign_request(HmacAlgorithm::Sha256, "POST", "/test", "", headers_tampered, body, SECRET).unwrap();
         assert_ne!(s1, s2);
     }
 }

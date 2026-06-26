@@ -53,7 +53,7 @@ fn signed_request_with_body(body: &[u8], algorithm: HmacAlgorithm) -> Request<Bo
         ("x-aframp-key-id", KEY_ID),
         ("x-aframp-timestamp", timestamp),
     ];
-    let sig = sign_request(algorithm, "POST", "/transfer", "", headers, body, SECRET);
+    let sig = sign_request(algorithm, "POST", "/transfer", "", headers, body, SECRET).unwrap();
 
     Request::builder()
         .method("POST")
@@ -125,7 +125,7 @@ async fn tampered_body_is_rejected() {
         headers,
         br#"{"amount":"100"}"#,
         SECRET,
-    );
+    ).unwrap();
 
     let req = Request::builder()
         .method("POST")
@@ -164,9 +164,7 @@ async fn tampered_key_id_header_is_rejected() {
         headers,
         body,
         SECRET,
-    );
-
-    // Send with a different key-id in the header (tampered)
+    ).unwrap();
     let req = Request::builder()
         .method("POST")
         .uri("/transfer")
@@ -200,7 +198,7 @@ async fn tampered_timestamp_header_is_rejected() {
         headers,
         body,
         SECRET,
-    );
+    ).unwrap();
 
     // Send with a different timestamp (tampered)
     let req = Request::builder()
@@ -337,7 +335,7 @@ async fn sha512_signature_rejected_when_header_claims_sha256() {
         headers,
         body,
         SECRET,
-    );
+    ).unwrap();
     // Extract just the hex part and repackage with wrong algorithm label
     let hex_part = real_sig.split("signature=").nth(1).unwrap();
     let spoofed_header = format!(
